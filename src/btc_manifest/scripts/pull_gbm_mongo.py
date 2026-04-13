@@ -4,15 +4,11 @@ import argparse
 import csv
 import json
 import os
-import sys
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-
-from btc_manifest.config import load_dotenv  # noqa: E402
+from btc_manifest.config import load_dotenv
 
 
 SUBJECT_PATTERN = "subject"
@@ -29,7 +25,7 @@ def require_dependencies() -> Any:
     except ImportError as error:
         raise SystemExit(
             "Missing dependency. Run with:\n"
-            "  uv run --with pymongo scripts/pull_gbm_mongo.py <command>\n"
+            "  uv run --with pymongo pull-gbm-mongo <command>\n"
         ) from error
     return MongoClient
 
@@ -125,7 +121,7 @@ def discover(args: argparse.Namespace) -> None:
 
     print("\nExport once you choose collections:")
     print(
-        "uv run --with pymongo scripts/pull_gbm_mongo.py export "
+        "uv run --with pymongo pull-gbm-mongo export "
         "--subject-collection subject --biospecimen-collection biospecimen"
     )
 
