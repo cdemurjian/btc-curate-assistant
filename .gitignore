@@ -1,6 +1,8 @@
 .env
 .env.*
 !.env.example
+global-bundle.pem
+*.pem
 
 .venv/
 __pycache__/

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
+import socket
 import re
 import shutil
 import subprocess
@@ -164,6 +166,47 @@ def check_aws_sso(settings: Settings) -> tuple[bool, str]:
 
     message = (result.stderr or result.stdout).strip()
     return False, message or "AWS SSO check failed"
+
+
+def on_btc_vm() -> bool:
+    override = os.getenv("BTC_CURATE_ASSISTANT_ON_VM")
+    if override is not None:
+        return override.lower() in {"1", "true", "yes", "y"}
+    hostname = socket.gethostname().lower()
+    return hostname.startswith("btc-") or "btc-prod" in hostname
+
+
+def mongo_export_paths(settings: Settings) -> tuple[Path, Path]:
+    today = datetime.now().strftime("%y%m%d")
+    mongo_dir = settings.files_dir / "mongo"
+    return mongo_dir / f"subject-{today}.csv", mongo_dir / f"biospecimen-{today}.csv"
+
+
+def mongo_exports_are_current(settings: Settings) -> bool:
+    subject_path, biospecimen_path = mongo_export_paths(settings)
+    return subject_path.exists() and biospecimen_path.exists()
+
+
+def ensure_current_mongo_exports(settings: Settings) -> None:
+    if not on_btc_vm():
+        print("Not on BTC VM; using existing gitignored files under files/ if present.")
+        return
+
+    subject_path, biospecimen_path = mongo_export_paths(settings)
+    if mongo_exports_are_current(settings):
+        print(f"Mongo exports are current: {subject_path}, {biospecimen_path}")
+        return
+
+    print("On BTC VM and today's Mongo exports are missing; pulling Mongo reference files...")
+    command = ["uv", "run", "--with", "pymongo", "scripts/pull_gbm_mongo.py", "export"]
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    if result.stdout.strip():
+        print(result.stdout.strip())
+    if result.returncode != 0:
+        raise SystemExit(
+            "Mongo export failed. Check MONGODB_URI, MONGODB_DATABASE, and global-bundle.pem.\n"
+            f"{result.stderr.strip()}"
+        )
 
 
 def run_s3_inventory(command: str, output_path: Path) -> subprocess.CompletedProcess[str]:
@@ -794,6 +837,7 @@ def run_interactive(settings: Settings) -> None:
             f"AWS is not ready: {aws_message}{login_hint}"
         )
     print(f"AWS SSO OK: {aws_message}")
+    ensure_current_mongo_exports(settings)
 
     resumed_plan = choose_resume_run(settings)
     if resumed_plan is not None:

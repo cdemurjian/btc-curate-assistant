@@ -77,6 +77,18 @@ uv run cli.py --help
 On the BTC VM, use the standalone Mongo export helper to inspect collections and export local GBM reference files:
 
 ```bash
+wget https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+chmod 600 global-bundle.pem
+```
+
+Set `.env` with the DocumentDB URI and database. Example:
+
+```bash
+MONGODB_URI="mongodb://<username>:<password>@btc-prod-docdb.cluster-cfkw4s6gw569.us-east-1.docdb.amazonaws.com:27017/?tls=true&tlsInsecure=true&tlsCAFile=global-bundle.pem&authSource=admin&retryWrites=false"
+MONGODB_DATABASE=dash_production
+```
+
+```bash
 uv run --with pymongo scripts/pull_gbm_mongo.py discover
 ```
 
@@ -92,3 +104,16 @@ This writes:
 - `files/mongo/biospecimen-YYMMDD.csv`
 
 Those files are under `files/`, so they are ignored by git.
+
+When `uv run cli.py` runs on a BTC VM, it checks for today's `files/mongo/subject-YYMMDD.csv` and `files/mongo/biospecimen-YYMMDD.csv` immediately after AWS SSO succeeds. If either file is missing, it automatically runs:
+
+```bash
+uv run --with pymongo scripts/pull_gbm_mongo.py export
+```
+
+VM detection uses the hostname by default. To force behavior, set:
+
+```bash
+BTC_CURATE_ASSISTANT_ON_VM=1   # force VM behavior
+BTC_CURATE_ASSISTANT_ON_VM=0   # force local behavior
+```
