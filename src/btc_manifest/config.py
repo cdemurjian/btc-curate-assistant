@@ -17,6 +17,14 @@ def load_dotenv(path: Path = Path(".env")) -> None:
         os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
 
 
+def env_value(*keys: str) -> str | None:
+    for key in keys:
+        value = os.getenv(key)
+        if value:
+            return value
+    return None
+
+
 @dataclass(frozen=True)
 class Settings:
     mongodb_uri: str | None
@@ -35,7 +43,10 @@ class Settings:
             mongodb_database=os.getenv("MONGODB_DATABASE"),
             aws_profile=os.getenv("AWS_PROFILE"),
             aws_region=os.getenv("AWS_REGION"),
-            output_dir=output_dir or Path(os.getenv("BTC_MANFIEST_OUTPUT_DIR", "runs")),
-            templates_dir=Path(os.getenv("BTC_MANFIEST_TEMPLATES_DIR", "templates")),
-            files_dir=Path(os.getenv("BTC_MANFIEST_FILES_DIR", "files")),
+            output_dir=output_dir
+            or Path(env_value("OUTPUT_DIR", "BTC_CURATE_ASSISTANT_OUTPUT_DIR") or "runs"),
+            templates_dir=Path(
+                env_value("TEMPLATES_DIR", "BTC_CURATE_ASSISTANT_TEMPLATES_DIR") or "templates"
+            ),
+            files_dir=Path(env_value("FILES_DIR", "BTC_CURATE_ASSISTANT_FILES_DIR") or "files"),
         )

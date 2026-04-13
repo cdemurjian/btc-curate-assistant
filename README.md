@@ -1,4 +1,4 @@
-# BTC Manfiest
+# BTC Curate Assistant
 
 Command-line tooling for end-to-end metadata manifest curation for the BTC project.
 
@@ -22,7 +22,7 @@ cp .env.example .env
 
 ```bash
 uv sync
-uv run btc-manfiest
+uv run cli.py
 ```
 
 During local development, this also works:
@@ -31,7 +31,18 @@ During local development, this also works:
 uv run cli.py
 ```
 
-For now, the CLI checks AWS SSO, prompts for an S3 path, runs a recursive `aws s3 ls ... | awk ...` inventory command, and writes a timestamped run folder under `runs/`.
+For now, the CLI checks AWS SSO, lets you start a new run or resume a run from `runs/`, prompts for an S3 path when starting a new run, runs `aws s3 ls <path> --recursive --profile <profile>`, and writes a timestamped CSV under `runs/`. The CSV has `file_path,size` headers, uses full `s3://bucket/key` paths, and filters common fake files such as `.DS_Store`, `._*`, `.` entries, and directory marker keys.
+
+After S3 inventory, the CLI asks:
+
+- whether subjects need registration (`Y`/`N` accepted)
+- whether biospecimens need registration (`Y`/`N`/`M` accepted; skipped and set to `Yes` when subject registration is `Yes`)
+- the BTC teamlab
+- the custom modality (`no_modality-default` or `scRNA-sharma`)
+
+Those answers are saved in `plan.json`. The CLI then copies the latest dated matching templates into the run folder: file and biospecimenfile templates always, subject template only when subject registration is `Yes`, and biospecimen template when biospecimen registration is `Yes` or `Maybe`.
+
+For manifest rendering, the CLI asks for one or more assays, study, lab, lab contact, lab first name, lab contact first name, panel, platform, and vendor. For `scRNA-sharma`, assay defaults to `scRNA`; for `GBM`, study defaults to `GBM_Trial1`. The shared file manifest renderer fills the copied file manifest with selected assay(s), selected teamlab, `file_source`, `file_extension`, and `file_size` from the S3 inventory, and sets `data_level=1` for `fastq.gz`/`fq.gz` files. The biospecimenfile manifest renderer fills selected teamlab, study, and `file_source`; subject and biospecimen IDs are handled by modality-specific mapping and are currently blank for `scRNA-sharma`.
 
 ## Repo Layout
 
@@ -58,5 +69,28 @@ For now, the CLI checks AWS SSO, prompts for an S3 path, runs a recursive `aws s
 ## Development
 
 ```bash
-uv run btc-manfiest --help
+uv run cli.py --help
 ```
+
+## VM Mongo Pull
+
+On the BTC VM, use the standalone Mongo export helper to inspect collections and export local GBM reference files:
+
+```bash
+uv run --with pymongo --with openpyxl scripts/pull_gbm_mongo.py discover
+```
+
+After choosing the right collections:
+
+```bash
+uv run --with pymongo --with openpyxl scripts/pull_gbm_mongo.py export \
+  --subject-collection <subject_collection> \
+  --biospecimen-collection <biospecimen_collection>
+```
+
+This writes:
+
+- `files/gbm/GBM-subject.xlsx`
+- `files/gbm/GBM-biospecimen.xlsx`
+
+Those files are under `files/`, so they are ignored by git.
