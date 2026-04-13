@@ -30,20 +30,32 @@ def require_dependencies() -> tuple[Any, Any]:
     return MongoClient, Workbook
 
 
-def mongo_settings(args: argparse.Namespace) -> tuple[str, str]:
+def mongo_uri(args: argparse.Namespace) -> str:
     load_dotenv()
     uri = args.uri or os.getenv("MONGODB_URI")
-    database = args.database or os.getenv("MONGODB_DATABASE")
     if not uri:
         raise SystemExit("MONGODB_URI is not set in .env and --uri was not provided.")
+    return uri
+
+
+def mongo_settings(args: argparse.Namespace) -> tuple[str, str]:
+    uri = mongo_uri(args)
+    database = args.database or os.getenv("MONGODB_DATABASE")
     if not database:
         raise SystemExit("MONGODB_DATABASE is not set in .env and --database was not provided.")
     return uri, database
 
 
-def mongo_database(args: argparse.Namespace) -> Any:
+def mongo_client(args: argparse.Namespace) -> Any:
     MongoClient, _ = require_dependencies()
+    client = MongoClient(mongo_uri(args), serverSelectionTimeoutMS=10_000)
+    client.admin.command("ping")
+    return client
+
+
+def mongo_database(args: argparse.Namespace) -> Any:
     uri, database = mongo_settings(args)
+    MongoClient, _ = require_dependencies()
     client = MongoClient(uri, serverSelectionTimeoutMS=10_000)
     client.admin.command("ping")
     return client[database]
@@ -77,6 +89,12 @@ def list_collections(args: argparse.Namespace) -> None:
     for name in sorted(db.list_collection_names()):
         count = db[name].estimated_document_count()
         print(f"{name}\t{count}")
+
+
+def list_databases(args: argparse.Namespace) -> None:
+    client = mongo_client(args)
+    for name in sorted(client.list_database_names()):
+        print(name)
 
 
 def discover(args: argparse.Namespace) -> None:
@@ -166,6 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("list", help="List Mongo collections and estimated counts.")
+    subparsers.add_parser("databases", help="List Mongo databases.")
     subparsers.add_parser("discover", help="List collections, sample keys, and likely candidates.")
 
     export_parser = subparsers.add_parser("export", help="Export selected collections to XLSX.")
@@ -180,7 +199,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "list":
+    if args.command == "databases":
+        list_databases(args)
+    elif args.command == "list":
         list_collections(args)
     elif args.command == "discover":
         discover(args)
