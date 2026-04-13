@@ -77,20 +77,18 @@ uv run cli.py --help
 On the BTC VM, use the standalone Mongo export helper to inspect collections and export local GBM reference files:
 
 ```bash
-uv run --with pymongo --with openpyxl scripts/pull_gbm_mongo.py discover
+uv run --with pymongo scripts/pull_gbm_mongo.py discover
 ```
 
-After choosing the right collections:
+After choosing the right database and collections:
 
 ```bash
-uv run --with pymongo --with openpyxl scripts/pull_gbm_mongo.py export \
-  --subject-collection <subject_collection> \
-  --biospecimen-collection <biospecimen_collection>
+uv run --with pymongo scripts/pull_gbm_mongo.py export
 ```
 
 This writes:
 
-- `files/gbm/GBM-subject.xlsx`
-- `files/gbm/GBM-biospecimen.xlsx`
+- `files/mongo/subject-YYMMDD.csv`
+- `files/mongo/biospecimen-YYMMDD.csv`
 
 Those files are under `files/`, so they are ignored by git.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -18,16 +19,19 @@ SUBJECT_PATTERN = "subject"
 BIOSPECIMEN_PATTERN = "biospecimen"
 
 
-def require_dependencies() -> tuple[Any, Any]:
+SUBJECT_FIELDS = ["study", "subject", "subject_key", "subject_trial_id"]
+BIOSPECIMEN_FIELDS = ["biospecimen_key", "biospecimen_trial_id", "subject_key"]
+
+
+def require_dependencies() -> Any:
     try:
-        from openpyxl import Workbook
         from pymongo import MongoClient
     except ImportError as error:
         raise SystemExit(
             "Missing dependency. Run with:\n"
-            "  uv run --with pymongo --with openpyxl scripts/pull_gbm_mongo.py <command>\n"
+            "  uv run --with pymongo scripts/pull_gbm_mongo.py <command>\n"
         ) from error
-    return MongoClient, Workbook
+    return MongoClient
 
 
 def mongo_uri(args: argparse.Namespace) -> str:
@@ -47,7 +51,7 @@ def mongo_settings(args: argparse.Namespace) -> tuple[str, str]:
 
 
 def mongo_client(args: argparse.Namespace) -> Any:
-    MongoClient, _ = require_dependencies()
+    MongoClient = require_dependencies()
     client = MongoClient(mongo_uri(args), serverSelectionTimeoutMS=10_000)
     client.admin.command("ping")
     return client
@@ -55,7 +59,7 @@ def mongo_client(args: argparse.Namespace) -> Any:
 
 def mongo_database(args: argparse.Namespace) -> Any:
     uri, database = mongo_settings(args)
-    MongoClient, _ = require_dependencies()
+    MongoClient = require_dependencies()
     client = MongoClient(uri, serverSelectionTimeoutMS=10_000)
     client.admin.command("ping")
     return client[database]
@@ -121,50 +125,64 @@ def discover(args: argparse.Namespace) -> None:
 
     print("\nExport once you choose collections:")
     print(
-        "uv run --with pymongo --with openpyxl scripts/pull_gbm_mongo.py export "
-        "--subject-collection <subject_collection> "
-        "--biospecimen-collection <biospecimen_collection>"
+        "uv run --with pymongo scripts/pull_gbm_mongo.py export "
+        "--subject-collection subject --biospecimen-collection biospecimen"
     )
 
 
-def export_collection(db: Any, collection_name: str, output_path: Path, limit: int | None) -> int:
-    _, Workbook = require_dependencies()
-    documents = []
-    cursor = db[collection_name].find({})
+def dated_csv_path(out_dir: Path, stem: str) -> Path:
+    return out_dir / f"{stem}-{datetime.now().strftime('%y%m%d')}.csv"
+
+
+def nested_value(document: dict[str, Any], key: str) -> Any:
+    value: Any = document
+    for part in key.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return stringify(value)
+
+
+def export_collection(
+    db: Any,
+    collection_name: str,
+    output_path: Path,
+    fields: list[str],
+    limit: int | None,
+) -> int:
+    cursor = db[collection_name].find({}, {field: 1 for field in fields})
     if limit:
         cursor = cursor.limit(limit)
-    for document in cursor:
-        documents.append(flattened(document))
-
-    columns = sorted({key for document in documents for key in document})
-    workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = collection_name[:31] or "export"
-    worksheet.append(columns)
-    for document in documents:
-        worksheet.append([document.get(column) for column in columns])
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    workbook.save(output_path)
-    return len(documents)
+    count = 0
+    with output_path.open("w", newline="") as output_file:
+        writer = csv.writer(output_file)
+        writer.writerow(fields)
+        for document in cursor:
+            writer.writerow([nested_value(document, field) for field in fields])
+            count += 1
+    return count
 
 
 def export(args: argparse.Namespace) -> None:
     db = mongo_database(args)
     out_dir = args.out_dir
-    subject_path = out_dir / "GBM-subject.xlsx"
-    biospecimen_path = out_dir / "GBM-biospecimen.xlsx"
+    subject_path = dated_csv_path(out_dir, "subject")
+    biospecimen_path = dated_csv_path(out_dir, "biospecimen")
 
     subject_count = export_collection(
         db,
         args.subject_collection,
         subject_path,
+        SUBJECT_FIELDS,
         args.limit,
     )
     biospecimen_count = export_collection(
         db,
         args.biospecimen_collection,
         biospecimen_path,
+        BIOSPECIMEN_FIELDS,
         args.limit,
     )
 
@@ -187,10 +205,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("databases", help="List Mongo databases.")
     subparsers.add_parser("discover", help="List collections, sample keys, and likely candidates.")
 
-    export_parser = subparsers.add_parser("export", help="Export selected collections to XLSX.")
-    export_parser.add_argument("--subject-collection", required=True)
-    export_parser.add_argument("--biospecimen-collection", required=True)
-    export_parser.add_argument("--out-dir", type=Path, default=Path("files/gbm"))
+    export_parser = subparsers.add_parser("export", help="Export selected collections to CSV.")
+    export_parser.add_argument("--subject-collection", default="subject")
+    export_parser.add_argument("--biospecimen-collection", default="biospecimen")
+    export_parser.add_argument("--out-dir", type=Path, default=Path("files/mongo"))
     export_parser.add_argument("--limit", type=int, default=None)
 
     return parser
