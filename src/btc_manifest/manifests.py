@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from btc_manifest.inventory import data_level_for_file, file_extension, read_inventory_rows
-from btc_manifest.modalities import biospecimenfile_ids_for_row
+from btc_manifest.modalities import assay_for_file, propose_biospecimenfile_ids_for_row
+from btc_manifest.references import reviewed_id_map
 from btc_manifest.templates import replace_xlsx_sheet_rows, strip_template_hints_from_paths
 
 
@@ -70,10 +71,11 @@ def render_file_manifest(plan_data: dict[str, Any]) -> str:
     file_rows: list[list[Any]] = [file_headers]
     for row in inventory_rows:
         file_path = row["file_path"]
+        assay_value = assay_for_file(file_path, plan_data) or manifest_assay_value(manifest_values)
         file_rows.append(
             [
                 "file",
-                manifest_assay_value(manifest_values),
+                assay_value,
                 teamlab,
                 data_level_for_file(file_path),
                 manifest_values["lab"],
@@ -111,11 +113,17 @@ def render_biospecimenfile_manifest(plan_data: dict[str, Any]) -> str:
         "file_source",
     ]
     biospecimenfile_rows: list[list[Any]] = [biospecimenfile_headers]
+    id_map = reviewed_id_map(plan_data)
     for row in inventory_rows:
-        subject_trial_id, biospecimen_trial_id = biospecimenfile_ids_for_row(
-            row["file_path"],
-            plan_data,
-        )
+        reviewed_ids = id_map.get(row["file_path"], {})
+        if reviewed_ids:
+            subject_trial_id = reviewed_ids.get("subject_trial_id", "")
+            biospecimen_trial_id = reviewed_ids.get("biospecimen_trial_id", "")
+        else:
+            subject_trial_id, biospecimen_trial_id = propose_biospecimenfile_ids_for_row(
+                row["file_path"],
+                plan_data,
+            )
         biospecimenfile_rows.append(
             [
                 "biospecimenfile",
@@ -132,8 +140,67 @@ def render_biospecimenfile_manifest(plan_data: dict[str, Any]) -> str:
     return str(biospecimenfile_template)
 
 
+def render_biospecimen_manifest(plan_data: dict[str, Any]) -> str | None:
+    copied_templates = plan_data.get("copied_templates", {})
+    if "biospecimen" not in copied_templates:
+        return None
+
+    biospecimen_template = Path(copied_templates["biospecimen"])
+    teamlab = plan_data["variables"]["teamlab"]
+    manifest_values = plan_data["modality_variables"][plan_data["variables"]["custom_modality"]]
+    id_map = reviewed_id_map(plan_data)
+
+    biospecimen_headers = [
+        "Component",
+        "teamlab",
+        "study",
+        "subject_trial_id",
+        "biospecimen_trial_id",
+        "sample_type",
+        "timepoint",
+        "additional_data",
+        "nominal_timepoint",
+        "parent_biospecimen",
+        "parent_biospecimen_raw",
+    ]
+    biospecimen_rows: list[list[Any]] = [biospecimen_headers]
+    seen: set[tuple[str, str]] = set()
+    for ids in id_map.values():
+        if ids.get("biospecimen_status") == "exact":
+            continue
+        subject_trial_id = ids.get("subject_trial_id", "")
+        biospecimen_trial_id = ids.get("biospecimen_trial_id", "")
+        key = (subject_trial_id, biospecimen_trial_id)
+        if not any(key) or key in seen:
+            continue
+        seen.add(key)
+        biospecimen_rows.append(
+            [
+                "biospecimen",
+                teamlab,
+                manifest_values["study"],
+                subject_trial_id,
+                biospecimen_trial_id,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]
+        )
+
+    replace_xlsx_sheet_rows(biospecimen_template, "Sheet1", biospecimen_rows)
+    strip_template_hints_from_paths([str(biospecimen_template)])
+    return str(biospecimen_template)
+
+
 def render_manifest_files(plan_data: dict[str, Any]) -> dict[str, str]:
-    return {
+    rendered = {
         "file": render_file_manifest(plan_data),
         "biospecimenfile": render_biospecimenfile_manifest(plan_data),
     }
+    biospecimen_manifest = render_biospecimen_manifest(plan_data)
+    if biospecimen_manifest is not None:
+        rendered["biospecimen"] = biospecimen_manifest
+    return rendered

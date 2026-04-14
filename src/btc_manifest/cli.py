@@ -8,9 +8,22 @@ from typing import Any
 
 from btc_manifest.aws import check_aws_sso, parse_s3_uri, run_s3_inventory
 from btc_manifest.config import Settings
+from btc_manifest.inventory import read_inventory_rows
 from btc_manifest.manifests import ASSAY_OPTIONS, render_manifest_files
+from btc_manifest.modalities import (
+    biospecimen_candidates_for_group,
+    propose_biospecimenfile_ids_for_row,
+    review_group_key_for_file,
+    should_skip_biospecimenfile_mapping,
+)
 from btc_manifest.mongo_exports import ensure_current_mongo_exports
 from btc_manifest.plans import build_plan, load_plan, save_plan_data
+from btc_manifest.references import (
+    exact_reference_match,
+    fuzzy_reference_matches,
+    load_biospecimen_references,
+    load_subject_references,
+)
 from btc_manifest.templates import copy_required_templates, strip_template_hints_from_paths
 
 
@@ -167,6 +180,270 @@ def ask_manifest_questions(
     }
 
 
+def review_id_candidate(
+    label: str,
+    candidate: str,
+    exact_match: dict[str, str] | None,
+    fuzzy_matches: list[Any],
+    field: str,
+) -> tuple[str, str]:
+    if not candidate:
+        return "", "missing"
+    if exact_match is not None:
+        return candidate, "exact"
+    if not fuzzy_matches:
+        return candidate, "new"
+
+    print(f"Mongo check: {label} not found exactly: {candidate}")
+    options = [f"Keep new value: {candidate}", *[match.value for match in fuzzy_matches], "Blank"]
+    print(f"  1. Keep new value: {candidate} [default]")
+    for index, match in enumerate(fuzzy_matches, start=2):
+        print(f"  {index}. {match.value} ({match.score:.0%})")
+    print(f"  {len(fuzzy_matches) + 2}. Blank")
+
+    while True:
+        answer = input("> ").strip()
+        if not answer:
+            return candidate, "new"
+        if answer.isdigit() and 1 <= int(answer) <= len(options):
+            selected = options[int(answer) - 1]
+            if selected == "Blank":
+                return "", "blank"
+            if selected.startswith("Keep new value: "):
+                return candidate, "new"
+            return selected, "fuzzy"
+        if answer:
+            direct_match = next(
+                (match for match in fuzzy_matches if match.row.get(field) == answer),
+                None,
+            )
+            if direct_match is not None:
+                return direct_match.value, "fuzzy"
+            if answer == candidate:
+                return candidate, "new"
+        print("Choose one of the listed options.")
+
+
+# Parts order in group_key: patient|surgery|location|core
+_SLUG_PROMPTS: dict[str, tuple[str, str]] = {
+    "<patient>": ("Patient ID", "e.g. DFCI1"),
+    "<surgery>": ("Surgery", "e.g. S1"),
+    "<core>": ("Core", "e.g. C4"),
+}
+_REQUIRED_SLUG_MARKERS = set(_SLUG_PROMPTS)
+
+
+def confirm_group_assignment(
+    group_key: str,
+    file_count: int,
+    subject_trial_id: str,
+    biospecimen_trial_id: str,
+    plan_data: dict[str, Any],
+    sample_paths: list[str] | None = None,
+    default_core: str = "",
+) -> tuple[str, str]:
+    # group_key parts: patient|surgery|location|core
+    parts = group_key.split("|")
+    print(f"Group {group_key} ({file_count} files)")
+
+    missing_required = [p for p in parts if p in _REQUIRED_SLUG_MARKERS]
+    if missing_required:
+        # Show a few representative file paths so the user has context.
+        shown = (sample_paths or [])[:4]
+        for p in shown:
+            # Print just the last two path components (parent_dir/filename)
+            segments = [s for s in p.split("/") if s]
+            print(f"    {'/'.join(segments[-2:]) if len(segments) >= 2 else p}")
+        if sample_paths and len(sample_paths) > 4:
+            print(f"    ... and {len(sample_paths) - 4} more")
+
+        # Ask for each missing required slug by name, then look up the biospecimen.
+        resolved = list(parts)
+        for i, part in enumerate(resolved):
+            if part not in _REQUIRED_SLUG_MARKERS:
+                continue
+            if part == "<core>" and default_core:
+                resolved[i] = default_core
+                continue
+            label, hint = _SLUG_PROMPTS[part]
+            value = input(f"  {label} ({hint}): ").strip()
+            if not value:
+                print("  Skipping group.")
+                return "", ""
+            resolved[i] = value.upper()
+
+        # resolved[0] = patient = subject_trial_id for this modality
+        subject_trial_id = resolved[0] if not resolved[0].startswith("<") else subject_trial_id
+
+        candidates = biospecimen_candidates_for_group(resolved, plan_data)
+
+        if not candidates:
+            known_slugs = [s for s in resolved if s and not s.startswith("<")]
+            print(f"  No tracker biospecimen found matching {' + '.join(known_slugs)}.")
+            biospecimen_trial_id = ask_text("Biospecimen trial ID", biospecimen_trial_id or None)
+            subject_trial_id = ask_text("Subject trial ID", subject_trial_id or None)
+        elif len(candidates) == 1:
+            biospecimen_trial_id = candidates[0]
+            print(f"  Tracker Candidate -> {biospecimen_trial_id}")
+        else:
+            print(f"  {len(candidates)} candidates:")
+            for idx, cand in enumerate(candidates, 1):
+                print(f"    {idx}. {cand}")
+            while True:
+                answer = input("  Select number or type value: ").strip()
+                if answer.isdigit() and 1 <= int(answer) <= len(candidates):
+                    biospecimen_trial_id = candidates[int(answer) - 1]
+                    break
+                if answer:
+                    biospecimen_trial_id = answer
+                    break
+        # Fall through to Y/e/s confirmation with the resolved IDs.
+
+    else:
+        print(
+            f"  candidate: subject_trial_id={subject_trial_id or '<blank>'}, "
+            f"biospecimen_trial_id={biospecimen_trial_id or '<blank>'}"
+        )
+
+    while True:
+        answer = input("Is this right? [Y/n/e/s]: ").strip().lower()
+        if answer in {"", "y", "yes"}:
+            return subject_trial_id, biospecimen_trial_id
+        if answer in {"n", "no"}:
+            follow_up = input("No selected. Edit or skip? [e/s]: ").strip().lower()
+            if follow_up in {"e", "edit"}:
+                return (
+                    ask_text("Subject trial ID", subject_trial_id),
+                    ask_text("Biospecimen trial ID", biospecimen_trial_id),
+                )
+            if follow_up in {"s", "skip", ""}:
+                return "", ""
+            print("Enter e or s.")
+            continue
+        if answer in {"e", "edit"}:
+            return (
+                ask_text("Subject trial ID", subject_trial_id),
+                ask_text("Biospecimen trial ID", biospecimen_trial_id),
+            )
+        if answer in {"s", "skip"}:
+            return "", ""
+        print("Enter Y, e, or s.")
+
+
+def review_biospecimenfile_ids(plan_data: dict[str, Any]) -> None:
+    files_dir = Path(plan_data["files_dir"])
+    modality = plan_data["variables"]["custom_modality"]
+    manifest_values = plan_data["modality_variables"][modality]
+    subject_refs = load_subject_references(files_dir, manifest_values.get("study"))
+    biospecimen_refs = load_biospecimen_references(files_dir)
+    proposed_pairs: dict[str, tuple[str, str]] = {}
+    skipped_paths: list[str] = []
+    for row in read_inventory_rows(plan_data):
+        file_path = row["file_path"]
+        if should_skip_biospecimenfile_mapping(file_path, plan_data):
+            skipped_paths.append(file_path)
+            continue
+        proposed_pairs[file_path] = propose_biospecimenfile_ids_for_row(file_path, plan_data)
+
+    if skipped_paths:
+        plan_data["biospecimenfile_skipped_mapping"] = skipped_paths
+        print(
+            "Biospecimenfile ID review: "
+            f"skipped {len(skipped_paths)} legacy/manual file rows."
+        )
+
+    if not any(any(pair) for pair in proposed_pairs.values()):
+        plan_data["biospecimenfile_id_map"] = {}
+        print("Biospecimenfile ID review: no modality ID candidates yet.")
+        return
+
+    group_to_paths: dict[str, list[str]] = {}
+    for file_path in proposed_pairs:
+        group_key = review_group_key_for_file(file_path, plan_data)
+        group_to_paths.setdefault(group_key, []).append(file_path)
+
+    # If any groups are missing core, ask once upfront — it's usually the same for the whole upload.
+    default_core = ""
+    if any("<core>" in key for key in group_to_paths):
+        raw = input("What core should these files be? (e.g. C4, or blank to ask per group): ").strip()
+        default_core = raw.upper() if raw else ""
+
+    id_map: dict[str, dict[str, str]] = {}
+    reviewed_pairs: dict[tuple[str, str], dict[str, str]] = {}
+    fuzzy_count = 0
+    new_biospecimen_count = 0
+    for group_key, paths in sorted(group_to_paths.items()):
+        pair_counts: dict[tuple[str, str], int] = {}
+        for path in paths:
+            pair = proposed_pairs[path]
+            pair_counts[pair] = pair_counts.get(pair, 0) + 1
+        (subject_trial_id, biospecimen_trial_id), _ = max(
+            pair_counts.items(),
+            key=lambda item: item[1],
+        )
+        subject_trial_id, biospecimen_trial_id = confirm_group_assignment(
+            group_key,
+            len(paths),
+            subject_trial_id,
+            biospecimen_trial_id,
+            plan_data,
+            sample_paths=paths,
+            default_core=default_core,
+        )
+        pair_key = (subject_trial_id, biospecimen_trial_id)
+        if pair_key in reviewed_pairs:
+            for path in paths:
+                id_map[path] = reviewed_pairs[pair_key]
+            continue
+
+        subject_exact = exact_reference_match(subject_refs, "subject_trial_id", subject_trial_id)
+        subject_fuzzy = fuzzy_reference_matches(subject_refs, "subject_trial_id", subject_trial_id)
+        biospecimen_exact = exact_reference_match(
+            biospecimen_refs,
+            "biospecimen_trial_id",
+            biospecimen_trial_id,
+        )
+        biospecimen_fuzzy = fuzzy_reference_matches(
+            biospecimen_refs,
+            "biospecimen_trial_id",
+            biospecimen_trial_id,
+        )
+
+        subject_value, subject_status = review_id_candidate(
+            "Subject trial ID",
+            subject_trial_id,
+            subject_exact,
+            subject_fuzzy,
+            "subject_trial_id",
+        )
+        biospecimen_value, biospecimen_status = review_id_candidate(
+            "Biospecimen trial ID",
+            biospecimen_trial_id,
+            biospecimen_exact,
+            biospecimen_fuzzy,
+            "biospecimen_trial_id",
+        )
+
+        fuzzy_count += int(subject_status == "fuzzy") + int(biospecimen_status == "fuzzy")
+        new_biospecimen_count += int(biospecimen_status == "new")
+        reviewed_pair = {
+            "subject_trial_id": subject_value,
+            "subject_status": subject_status,
+            "biospecimen_trial_id": biospecimen_value,
+            "biospecimen_status": biospecimen_status,
+        }
+        reviewed_pairs[pair_key] = reviewed_pair
+        for path in paths:
+            id_map[path] = reviewed_pair
+
+    plan_data["biospecimenfile_id_map"] = id_map
+    print(
+        "Biospecimenfile ID review: "
+        f"{len(id_map)} file rows, {fuzzy_count} fuzzy selections, "
+        f"{new_biospecimen_count} new biospecimen IDs."
+    )
+
+
 def render_modality_manifests(plan_data: dict[str, Any]) -> dict[str, str]:
     modality = plan_data["variables"]["custom_modality"]
     existing = plan_data.get("modality_variables", {}).get(modality, {})
@@ -174,6 +451,7 @@ def render_modality_manifests(plan_data: dict[str, Any]) -> dict[str, str]:
         plan_data,
         existing,
     )
+    review_biospecimenfile_ids(plan_data)
     rendered = render_manifest_files(plan_data)
     plan_data["rendered_manifests"] = rendered
     save_plan_data(plan_data)
