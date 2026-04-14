@@ -51,7 +51,9 @@ FILES_DIR=files
 TEMPLATES_DIR=templates
 ```
 
-For VM Mongo pulls, `.env` should also include:
+## VM Setup
+
+On the BTC VM, get Mongo credentials from the BTC DS team and add them to `.env`:
 
 ```bash
 MONGODB_URI="mongodb://<username>:<password>@btc-prod-docdb.cluster-cfkw4s6gw569.us-east-1.docdb.amazonaws.com:27017/?tls=true&tlsInsecure=true&tlsCAFile=global-bundle.pem&authSource=admin&retryWrites=false"
@@ -65,9 +67,7 @@ wget https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 chmod 600 global-bundle.pem
 ```
 
-## VM Setup
-
-On the BTC VM, confirm the Mongo connection:
+Confirm the Mongo connection:
 
 ```bash
 uv run --with pymongo pull-gbm-mongo databases
@@ -126,25 +126,6 @@ The CLI will:
 - render updated manifest workbooks in the run folder
 
 To resume an existing run, choose one of the listed `runs/` folders when the CLI starts.
-
-## Sharma GBM Notes
-
-For the `sharma` modality, the tool uses the file path to group files by patient, surgery, location, and core where possible.
-
-It then:
-
-- proposes subject and biospecimen IDs from `files/gbm/GBM-master-list.xlsx`
-- asks for missing required path parts when they cannot be inferred
-- shows grouped files so one confirmation applies to all files in the group
-- checks the proposed IDs against the latest `files/mongo/subject-YYMMDD.csv` and `files/mongo/biospecimen-YYMMDD.csv`
-- offers fuzzy Mongo matches when no exact Mongo match exists
-
-Legacy/manual parent folders matching `BTC-GBM-*` are skipped for biospecimen/subject ID mapping. They still remain in the file manifest.
-
-CLI wording:
-
-- `Tracker Candidate -> ...` means the value came from the GBM master tracker.
-- `Mongo check: ... not found exactly` means the tracker/proposed value did not exactly match the Mongo reference CSV.
 
 ## Repo Map
 
