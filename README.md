@@ -85,7 +85,7 @@ This writes:
 - `files/mongo/subject-YYMMDD.csv`
 - `files/mongo/biospecimen-YYMMDD.csv`
 
-`uv run curate` also performs this check automatically on the BTC VM. After AWS SSO succeeds, it checks whether today's Mongo CSVs exist; if not, it runs the export step.
+`uv run curate` also performs this check automatically on the BTC VM. After AWS SSO succeeds, it checks whether today's Mongo CSVs exist. If not, it runs the export step when Mongo is configured. If Mongo is not configured or the export fails, it falls back to the latest cached `files/mongo/subject-*.csv` and `files/mongo/biospecimen-*.csv` when both exist.
 
 VM detection uses the hostname by default. To force behavior:
 

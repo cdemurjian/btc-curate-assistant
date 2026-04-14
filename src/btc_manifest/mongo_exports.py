@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from btc_manifest.config import Settings
+from btc_manifest.references import latest_reference_csv
 
 
 def on_btc_vm() -> bool:
@@ -28,6 +29,28 @@ def mongo_exports_are_current(settings: Settings) -> bool:
     return subject_path.exists() and biospecimen_path.exists()
 
 
+def cached_mongo_exports(settings: Settings) -> tuple[Path | None, Path | None]:
+    return (
+        latest_reference_csv(settings.files_dir, "subject"),
+        latest_reference_csv(settings.files_dir, "biospecimen"),
+    )
+
+
+def mongo_is_configured(settings: Settings) -> bool:
+    return bool(settings.mongodb_uri and settings.mongodb_database)
+
+
+def use_cached_mongo_exports(settings: Settings, reason: str) -> bool:
+    subject_path, biospecimen_path = cached_mongo_exports(settings)
+    if subject_path and biospecimen_path:
+        print(
+            f"{reason}; using cached Mongo reference files: "
+            f"{subject_path}, {biospecimen_path}"
+        )
+        return True
+    return False
+
+
 def ensure_current_mongo_exports(settings: Settings) -> None:
     if not on_btc_vm():
         print("Not on BTC VM; using existing gitignored files under files/ if present.")
@@ -38,12 +61,22 @@ def ensure_current_mongo_exports(settings: Settings) -> None:
         print(f"Mongo exports are current: {subject_path}, {biospecimen_path}")
         return
 
+    if not mongo_is_configured(settings):
+        if use_cached_mongo_exports(settings, "Mongo is not configured in .env"):
+            return
+        raise SystemExit(
+            "Mongo is not configured in .env and no cached subject/biospecimen CSVs "
+            "were found under files/mongo/."
+        )
+
     print("On BTC VM and today's Mongo exports are missing; pulling Mongo reference files...")
     command = ["uv", "run", "--with", "pymongo", "pull-gbm-mongo", "export"]
     result = subprocess.run(command, text=True, capture_output=True, check=False)
     if result.stdout.strip():
         print(result.stdout.strip())
     if result.returncode != 0:
+        if use_cached_mongo_exports(settings, "Mongo export failed"):
+            return
         raise SystemExit(
             "Mongo export failed. Check MONGODB_URI, MONGODB_DATABASE, and global-bundle.pem.\n"
             f"{result.stderr.strip()}"
