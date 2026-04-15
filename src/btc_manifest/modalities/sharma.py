@@ -22,7 +22,7 @@ class SharmaParsed:
     assay: str
 
 
-PATIENT_RE = re.compile(r"(DFCI\d+|MSK\d+|JHU\d+)", re.IGNORECASE)
+PATIENT_RE = re.compile(r"(?<![A-Z0-9])(DFCI|MSK|JHU)[_\-\s]*(\d+)(?![A-Z0-9])", re.IGNORECASE)
 SURGERY_RE = re.compile(r"(?:^|[_\-.])S(\d+)(?:$|[_\-.])", re.IGNORECASE)
 LOCATION_RE = re.compile(r"(?:^|[_\-.])L(\d+[A-Z]?)(?:$|[_\-.])", re.IGNORECASE)
 CORE_RE = re.compile(r"(?:^|[_\-.])C(\d+)(?:$|[_\-.])", re.IGNORECASE)
@@ -31,6 +31,25 @@ LEGACY_BTC_GBM_RE = re.compile(r"^BTC[_\-]GBM[_\-]", re.IGNORECASE)
 
 def _normalize(token: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", token.upper())
+
+
+def _normalize_patient(patient: str) -> str:
+    match = PATIENT_RE.search(patient.upper())
+    if not match:
+        return patient.upper()
+    return f"{match.group(1).upper()}{match.group(2)}"
+
+
+def _assay_from_path(file_path: str, tail: str) -> str:
+    for text in (tail, file_path):
+        normalized = text.upper()
+        if "GEX" in normalized:
+            return "scRNA"
+        if "BCR" in normalized:
+            return "BCR"
+        if "TCR" in normalized:
+            return "TCR"
+    return ""
 
 
 def _extract_tail(file_path: str) -> tuple[str, str]:
@@ -66,20 +85,14 @@ def parse_file_path(file_path: str) -> SharmaParsed:
     core_match = CORE_RE.search(f"_{normalized_parent}_")
     core_str = f"C{core_match.group(1)}" if core_match else ""
 
-    assay = ""
-    if "BCR" in normalized_parent:
-        assay = "BCR"
-    elif "TCR" in normalized_parent:
-        assay = "TCR"
-
     return SharmaParsed(
         tail=tail,
         parent=parent,
-        patient=(patient_match.group(1).upper() if patient_match else ""),
+        patient=(_normalize_patient(patient_match.group(0)) if patient_match else ""),
         surgery=(f"S{surgery_match.group(1)}" if surgery_match else ""),
         location=(f"L{location_match.group(1).upper()}" if location_match else ""),
         core=core_str,
-        assay=assay,
+        assay=_assay_from_path(file_path, tail),
     )
 
 
@@ -201,7 +214,7 @@ def _tracker_row_matches(
     location: str,
     core: str,
 ) -> bool:
-    if patient and row.get("Patient_ID", "").upper() != patient.upper():
+    if patient and _normalize_patient(row.get("Patient_ID", "")) != _normalize_patient(patient):
         return False
     if surgery and row.get("Original_Timepoint", "").upper() != surgery.upper():
         return False
@@ -233,7 +246,7 @@ def biospecimen_candidates_for_group(
     plan_data: dict[str, Any],
 ) -> list[str]:
     patient, surgery, location, core = (group_parts + ["", "", "", ""])[:4]
-    patient = "" if patient.startswith("<") else patient
+    patient = "" if patient.startswith("<") else _normalize_patient(patient)
     surgery = "" if surgery.startswith("<") else surgery
     location = "" if location.startswith("<") else location
     core = "" if core.startswith("<") else core
