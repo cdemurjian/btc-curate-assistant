@@ -113,6 +113,37 @@ def replace_xlsx_sheet_rows(xlsx_path: Path, sheet_name: str, rows: list[list[An
     tmp_path.replace(xlsx_path)
 
 
+def _replace_text_nodes(root: ET.Element, replacements: dict[str, str]) -> int:
+    count = 0
+    for node in root.iter():
+        if node.text in replacements:
+            node.text = replacements[node.text]
+            count += 1
+    return count
+
+
+def replace_strings_in_xlsx(xlsx_path: Path, replacements: dict[str, str]) -> int:
+    if not replacements:
+        return 0
+
+    tmp_path = xlsx_path.with_name(f"{xlsx_path.stem}.tmp{xlsx_path.suffix}")
+    changed_cells = 0
+    with ZipFile(xlsx_path, "r") as source, ZipFile(tmp_path, "w", ZIP_DEFLATED) as target:
+        for item in source.infolist():
+            data = source.read(item.filename)
+            if (
+                item.filename == "xl/sharedStrings.xml"
+                or item.filename.startswith("xl/worksheets/")
+                and item.filename.endswith(".xml")
+            ):
+                root = ET.fromstring(data)
+                changed_cells += _replace_text_nodes(root, replacements)
+                data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+            target.writestr(item, data)
+    tmp_path.replace(xlsx_path)
+    return changed_cells
+
+
 def strip_template_hints(xlsx_path: Path) -> None:
     tmp_path = xlsx_path.with_name(f"{xlsx_path.stem}.tmp{xlsx_path.suffix}")
     with ZipFile(xlsx_path, "r") as source, ZipFile(tmp_path, "w", ZIP_DEFLATED) as target:

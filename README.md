@@ -148,6 +148,44 @@ The package entry points are defined in `pyproject.toml`:
 ```bash
 uv run curate
 uv run --with pymongo pull-gbm-mongo export
+uv run rename s3://bucket/prefix/ path/to/file.xlsx
+```
+
+## Rename S3 Paths
+
+`uv run rename` is the repo entry point for S3/object-path renaming workflows. Right now it supports removing `(` and `)` from object keys under an S3 prefix, and it can also update one or more manifest workbooks to match. The command is intentionally scoped so additional renaming behaviors can be added later without introducing a separate script each time.
+
+To remove `(` and `)` from object keys under an S3 prefix and then update one or more manifest workbooks:
+
+```bash
+uv run rename s3://btc-gbm/staging/example/ runs/240101_120000/template_file_04132026.xlsx
+```
+
+This command:
+
+- lists objects with `aws s3 ls --recursive`
+- plans renames by removing parentheses from each key
+- refuses to run if two source keys would collapse to the same target key, or if the target key already exists
+- defaults to dry-run
+- works with only an S3 path, or with an S3 path plus one or more `.xlsx` files
+- on `--apply`, runs `aws s3 mv` for each planned rename and then rewrites exact matching S3 path strings inside the provided `.xlsx` files
+
+Execute the changes for real with:
+
+```bash
+uv run rename s3://btc-gbm/staging/example/ runs/240101_120000/template_file_04132026.xlsx --apply
+```
+
+S3-only usage is also valid:
+
+```bash
+uv run rename s3://btc-gbm/staging/example/ --apply
+```
+
+Show command help with:
+
+```bash
+uv run rename --help
 ```
 
 The code is importable from `src/btc_manifest/`, for example:

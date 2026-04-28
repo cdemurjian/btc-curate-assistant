@@ -10,6 +10,7 @@ dependencies = []
 curate = "btc_manifest.cli:main"
 btc-curate-assistant = "btc_manifest.cli:main"
 pull-gbm-mongo = "btc_manifest.scripts.pull_gbm_mongo:main"
+rename = "btc_manifest.scripts.rename_s3_parentheses:main"
 
 [build-system]
 requires = ["hatchling"]

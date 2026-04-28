@@ -23,3 +23,5 @@ files/**
 *.egg-info/
 dist/
 build/
+
+curated/*
