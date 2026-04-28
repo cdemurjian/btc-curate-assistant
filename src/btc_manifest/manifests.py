@@ -114,6 +114,23 @@ def render_biospecimenfile_manifest(plan_data: dict[str, Any]) -> str:
         "file_source",
     ]
     biospecimenfile_rows: list[list[Any]] = [biospecimenfile_headers]
+    biospecimenfile_id_rows = plan_data.get("biospecimenfile_id_rows", [])
+    if biospecimenfile_id_rows:
+        for row in biospecimenfile_id_rows:
+            biospecimenfile_rows.append(
+                [
+                    "biospecimenfile",
+                    teamlab,
+                    manifest_values["study"],
+                    row.get("subject_trial_id", ""),
+                    row.get("biospecimen_trial_id", ""),
+                    row.get("file_path", ""),
+                ]
+            )
+        replace_xlsx_sheet_rows(biospecimenfile_template, "Sheet1", biospecimenfile_rows)
+        strip_template_hints_from_paths([str(biospecimenfile_template)])
+        return str(biospecimenfile_template)
+
     id_map = reviewed_id_map(plan_data)
     for row in inventory_rows:
         reviewed_ids = id_map.get(row["file_path"], {})
@@ -165,6 +182,37 @@ def render_biospecimen_manifest(plan_data: dict[str, Any]) -> str | None:
         "parent_biospecimen_raw",
     ]
     biospecimen_rows: list[list[Any]] = [biospecimen_headers]
+    biospecimenfile_id_rows = plan_data.get("biospecimenfile_id_rows", [])
+    if biospecimenfile_id_rows:
+        seen: set[tuple[str, str]] = set()
+        for ids in biospecimenfile_id_rows:
+            if ids.get("biospecimen_status") == "exact":
+                continue
+            subject_trial_id = ids.get("subject_trial_id", "")
+            biospecimen_trial_id = ids.get("biospecimen_trial_id", "")
+            key = (subject_trial_id, biospecimen_trial_id)
+            if not any(key) or key in seen:
+                continue
+            seen.add(key)
+            biospecimen_rows.append(
+                [
+                    "biospecimen",
+                    teamlab,
+                    manifest_values["study"],
+                    subject_trial_id,
+                    biospecimen_trial_id,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ]
+            )
+        replace_xlsx_sheet_rows(biospecimen_template, "Sheet1", biospecimen_rows)
+        strip_template_hints_from_paths([str(biospecimen_template)])
+        return str(biospecimen_template)
+
     seen: set[tuple[str, str]] = set()
     for ids in id_map.values():
         if ids.get("biospecimen_status") == "exact":

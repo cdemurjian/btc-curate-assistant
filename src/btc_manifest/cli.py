@@ -19,6 +19,7 @@ from btc_manifest.modalities import (
     review_group_key_for_file,
     should_skip_biospecimenfile_mapping,
 )
+from btc_manifest.modalities import white_proteomics
 from btc_manifest.mongo_exports import ensure_current_mongo_exports
 from btc_manifest.plans import build_plan, load_plan, save_plan_data
 from btc_manifest.references import (
@@ -388,6 +389,78 @@ def review_biospecimenfile_ids(plan_data: dict[str, Any]) -> None:
         return
 
     if custom_pairs is not None:
+        if modality == "white-proteomics":
+            expanded_pairs = white_proteomics.expanded_pairs_from_plan_data(plan_data, inventory_rows)
+            unique_pairs = {
+                pair
+                for pairs in expanded_pairs.values()
+                for pair in pairs
+                if any(pair)
+            }
+            reviewed_pairs: dict[tuple[str, str], dict[str, str]] = {}
+            biospecimenfile_id_rows: list[dict[str, str]] = []
+            fuzzy_count = 0
+            new_biospecimen_count = 0
+            for pair in sorted(unique_pairs):
+                subject_trial_id, biospecimen_trial_id = pair
+                subject_exact = exact_reference_match(subject_refs, "subject_trial_id", subject_trial_id)
+                subject_fuzzy = fuzzy_reference_matches(subject_refs, "subject_trial_id", subject_trial_id)
+                biospecimen_exact = exact_reference_match(
+                    biospecimen_refs,
+                    "biospecimen_trial_id",
+                    biospecimen_trial_id,
+                )
+                biospecimen_fuzzy = fuzzy_reference_matches(
+                    biospecimen_refs,
+                    "biospecimen_trial_id",
+                    biospecimen_trial_id,
+                )
+
+                subject_value, subject_status = review_id_candidate(
+                    "Subject trial ID",
+                    subject_trial_id,
+                    subject_exact,
+                    subject_fuzzy,
+                    "subject_trial_id",
+                )
+                biospecimen_value, biospecimen_status = review_id_candidate(
+                    "Biospecimen trial ID",
+                    biospecimen_trial_id,
+                    biospecimen_exact,
+                    biospecimen_fuzzy,
+                    "biospecimen_trial_id",
+                    prompt_when_missing=True,
+                )
+                fuzzy_count += int(subject_status == "fuzzy") + int(biospecimen_status == "fuzzy")
+                new_biospecimen_count += int(biospecimen_status == "new")
+                reviewed_pairs[pair] = {
+                    "subject_trial_id": subject_value,
+                    "subject_status": subject_status,
+                    "biospecimen_trial_id": biospecimen_value,
+                    "biospecimen_status": biospecimen_status,
+                }
+
+            for file_path, pairs in expanded_pairs.items():
+                for pair in pairs:
+                    reviewed_pair = reviewed_pairs.get(pair)
+                    if reviewed_pair is None:
+                        continue
+                    biospecimenfile_id_rows.append(
+                        {
+                            "file_path": file_path,
+                            **reviewed_pair,
+                        }
+                    )
+
+            plan_data["biospecimenfile_id_rows"] = biospecimenfile_id_rows
+            plan_data["biospecimenfile_id_map"] = {}
+            print(
+                "Biospecimenfile ID review: "
+                f"{len(biospecimenfile_id_rows)} biospecimenfile rows, {fuzzy_count} fuzzy selections, "
+                f"{new_biospecimen_count} new biospecimen IDs."
+            )
+            return
+
         id_map: dict[str, dict[str, str]] = {}
         reviewed_pairs: dict[tuple[str, str], dict[str, str]] = {}
         fuzzy_count = 0
@@ -439,6 +512,7 @@ def review_biospecimenfile_ids(plan_data: dict[str, Any]) -> None:
             id_map[file_path] = reviewed_pair
 
         plan_data["biospecimenfile_id_map"] = id_map
+        plan_data.pop("biospecimenfile_id_rows", None)
         print(
             "Biospecimenfile ID review: "
             f"{len(id_map)} file rows, {fuzzy_count} fuzzy selections, "

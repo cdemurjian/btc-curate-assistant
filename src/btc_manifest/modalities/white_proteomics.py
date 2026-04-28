@@ -207,6 +207,40 @@ def build_proposed_pairs_from_selection(
     return proposed_pairs
 
 
+def expanded_pairs_from_selection(
+    inventory_rows: list[dict[str, Any]],
+    patient: str,
+    mass_spec_labels: list[str],
+    mhc_labels: list[str],
+) -> dict[str, list[tuple[str, str]]]:
+    normalized_patient = normalize_patient(patient)
+    selected = {
+        "mhc": mhc_labels,
+        "global": mass_spec_labels,
+        "phospho": mass_spec_labels,
+        "unknown": mass_spec_labels,
+    }
+    expanded_pairs: dict[str, list[tuple[str, str]]] = {}
+    for row in inventory_rows:
+        file_path = row["file_path"]
+        labels = selected.get(_file_panel_bucket(file_path), [])
+        expanded_pairs[file_path] = [(normalized_patient, label) for label in labels]
+    return expanded_pairs
+
+
+def expanded_pairs_from_plan_data(
+    plan_data: dict[str, Any],
+    inventory_rows: list[dict[str, Any]],
+) -> dict[str, list[tuple[str, str]]]:
+    cached_selection = plan_data.get("_modality_cache", {}).get("white_proteomics_selection", {})
+    return expanded_pairs_from_selection(
+        inventory_rows,
+        cached_selection.get("patient", ""),
+        list(cached_selection.get("mass_spec_samples", [])),
+        list(cached_selection.get("mhc_samples", [])),
+    )
+
+
 def build_proposed_pairs(
     plan_data: dict[str, Any],
     inventory_rows: list[dict[str, Any]],
