@@ -13,12 +13,9 @@ __pycache__/
 # LibreOffice lock files
 .~lock.*#
 
-runs/*
-!runs/.gitkeep
+runs/
 
-files/**
-!files/
-!files/.gitkeep
+files/
 
 *.egg-info/
 dist/
