@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from btc_manifest.inventory import data_level_for_file, file_extension, read_inventory_rows
-from btc_manifest.modalities import assay_for_file, propose_biospecimenfile_ids_for_row
+from btc_manifest.modalities import assay_for_file, panel_for_file, propose_biospecimenfile_ids_for_row
 from btc_manifest.references import reviewed_id_map
 from btc_manifest.templates import replace_xlsx_sheet_rows, strip_template_hints_from_paths
 
@@ -72,6 +72,7 @@ def render_file_manifest(plan_data: dict[str, Any]) -> str:
     for row in inventory_rows:
         file_path = row["file_path"]
         assay_value = assay_for_file(file_path, plan_data) or manifest_assay_value(manifest_values)
+        panel_value = panel_for_file(file_path, plan_data) or manifest_values["panel"]
         file_rows.append(
             [
                 "file",
@@ -86,7 +87,7 @@ def render_file_manifest(plan_data: dict[str, Any]) -> str:
                 file_extension(file_path),
                 int(row["size"]) if row["size"].isdigit() else row["size"],
                 "",
-                manifest_values["panel"],
+                panel_value,
                 manifest_values["platform"],
                 manifest_values["vendor"],
             ]

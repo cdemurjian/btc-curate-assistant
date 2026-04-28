@@ -11,7 +11,10 @@ from btc_manifest.config import Settings
 from btc_manifest.inventory import read_inventory_rows
 from btc_manifest.manifests import ASSAY_OPTIONS, render_manifest_files
 from btc_manifest.modalities import (
+    available_modalities,
     biospecimen_candidates_for_group,
+    custom_proposed_pairs,
+    manifest_defaults_for_modality,
     propose_biospecimenfile_ids_for_row,
     review_group_key_for_file,
     should_skip_biospecimenfile_mapping,
@@ -93,6 +96,11 @@ def ask_text(prompt: str, default: str | None = None) -> str:
 
 def ask_curation_questions(existing: dict[str, Any] | None = None) -> dict[str, str]:
     existing = existing or {}
+    custom_modality = choose_one(
+        "Which custom modality is this?",
+        available_modalities(),
+        existing.get("custom_modality") or "no_modality-default",
+    )
     register_subjects = choose_one(
         "Do you need to register subjects?",
         ["Yes", "No"],
@@ -113,6 +121,7 @@ def ask_curation_questions(existing: dict[str, Any] | None = None) -> dict[str, 
         print("Biospecimen registration set to Yes because subject registration is Yes.")
 
     return {
+        "custom_modality": custom_modality,
         "register_subjects": register_subjects,
         "register_biospecimens": register_biospecimens,
         "teamlab": choose_one(
@@ -132,11 +141,6 @@ def ask_curation_questions(existing: dict[str, Any] | None = None) -> dict[str, 
             ],
             existing.get("teamlab") or "GBM",
         ),
-        "custom_modality": choose_one(
-            "Which custom modality is this?",
-            ["no_modality-default", "sharma"],
-            existing.get("custom_modality") or "no_modality-default",
-        ),
     }
 
 
@@ -147,7 +151,7 @@ def default_study_for_teamlab(teamlab: str) -> str | None:
 
 
 def default_assays_for_modality(modality: str) -> list[str]:
-    return []
+    return list(manifest_defaults_for_modality(modality).get("assays", []))
 
 
 def ask_manifest_questions(
@@ -157,26 +161,29 @@ def ask_manifest_questions(
     existing = existing or {}
     teamlab = plan_data["variables"]["teamlab"]
     modality = plan_data["variables"]["custom_modality"]
+    modality_defaults = manifest_defaults_for_modality(modality)
     return {
         "assays": choose_many(
             "What assay(s) should be used for the file manifest?",
             ASSAY_OPTIONS,
-            existing.get("assays") or default_assays_for_modality(modality),
+            existing.get("assays") or list(modality_defaults.get("assays", [])),
         ),
         "study": ask_text(
             "Study",
-            existing.get("study") or default_study_for_teamlab(teamlab),
+            existing.get("study")
+            or modality_defaults.get("study")
+            or default_study_for_teamlab(teamlab),
         ),
-        "lab": ask_text("Lab", existing.get("lab")),
+        "lab": ask_text("Lab", existing.get("lab") or modality_defaults.get("lab")),
         "lab_contact": ask_text("Lab contact", existing.get("lab_contact")),
         "lab_firstname": ask_text("Lab firstname", existing.get("lab_firstname")),
         "lab_contact_firstname": ask_text(
             "Lab contact firstname",
             existing.get("lab_contact_firstname"),
         ),
-        "panel": ask_text("Panel", existing.get("panel")),
-        "platform": ask_text("Platform", existing.get("platform")),
-        "vendor": ask_text("Vendor", existing.get("vendor")),
+        "panel": ask_text("Panel", existing.get("panel") or modality_defaults.get("panel")),
+        "platform": ask_text("Platform", existing.get("platform") or modality_defaults.get("platform")),
+        "vendor": ask_text("Vendor", existing.get("vendor") or modality_defaults.get("vendor")),
     }
 
 
@@ -186,12 +193,30 @@ def review_id_candidate(
     exact_match: dict[str, str] | None,
     fuzzy_matches: list[Any],
     field: str,
+    prompt_when_missing: bool = False,
 ) -> tuple[str, str]:
     if not candidate:
         return "", "missing"
     if exact_match is not None:
         return candidate, "exact"
     if not fuzzy_matches:
+        if prompt_when_missing:
+            print(f"Mongo check: {label} not found exactly: {candidate}")
+            print("  1. Keep as new value [default]")
+            print("  2. Edit value")
+            print("  3. Blank")
+            while True:
+                answer = input("> ").strip().lower()
+                if answer in {"", "1"}:
+                    return candidate, "new"
+                if answer in {"2", "e", "edit"}:
+                    edited = ask_text(label, candidate).strip()
+                    if not edited:
+                        return "", "blank"
+                    return edited, "new"
+                if answer in {"3", "b", "blank"}:
+                    return "", "blank"
+                print("Choose 1, 2, or 3.")
         return candidate, "new"
 
     print(f"Mongo check: {label} not found exactly: {candidate}")
@@ -336,14 +361,19 @@ def review_biospecimenfile_ids(plan_data: dict[str, Any]) -> None:
     manifest_values = plan_data["modality_variables"][modality]
     subject_refs = load_subject_references(files_dir, manifest_values.get("study"))
     biospecimen_refs = load_biospecimen_references(files_dir)
+    inventory_rows = read_inventory_rows(plan_data)
     proposed_pairs: dict[str, tuple[str, str]] = {}
     skipped_paths: list[str] = []
-    for row in read_inventory_rows(plan_data):
-        file_path = row["file_path"]
-        if should_skip_biospecimenfile_mapping(file_path, plan_data):
-            skipped_paths.append(file_path)
-            continue
-        proposed_pairs[file_path] = propose_biospecimenfile_ids_for_row(file_path, plan_data)
+    custom_pairs = custom_proposed_pairs(plan_data, inventory_rows)
+    if custom_pairs is None:
+        for row in inventory_rows:
+            file_path = row["file_path"]
+            if should_skip_biospecimenfile_mapping(file_path, plan_data):
+                skipped_paths.append(file_path)
+                continue
+            proposed_pairs[file_path] = propose_biospecimenfile_ids_for_row(file_path, plan_data)
+    else:
+        proposed_pairs, skipped_paths = custom_pairs
 
     if skipped_paths:
         plan_data["biospecimenfile_skipped_mapping"] = skipped_paths
@@ -355,6 +385,65 @@ def review_biospecimenfile_ids(plan_data: dict[str, Any]) -> None:
     if not any(any(pair) for pair in proposed_pairs.values()):
         plan_data["biospecimenfile_id_map"] = {}
         print("Biospecimenfile ID review: no modality ID candidates yet.")
+        return
+
+    if custom_pairs is not None:
+        id_map: dict[str, dict[str, str]] = {}
+        reviewed_pairs: dict[tuple[str, str], dict[str, str]] = {}
+        fuzzy_count = 0
+        new_biospecimen_count = 0
+        for file_path, pair in proposed_pairs.items():
+            if pair in reviewed_pairs:
+                id_map[file_path] = reviewed_pairs[pair]
+                continue
+
+            subject_trial_id, biospecimen_trial_id = pair
+            subject_exact = exact_reference_match(subject_refs, "subject_trial_id", subject_trial_id)
+            subject_fuzzy = fuzzy_reference_matches(subject_refs, "subject_trial_id", subject_trial_id)
+            biospecimen_exact = exact_reference_match(
+                biospecimen_refs,
+                "biospecimen_trial_id",
+                biospecimen_trial_id,
+            )
+            biospecimen_fuzzy = fuzzy_reference_matches(
+                biospecimen_refs,
+                "biospecimen_trial_id",
+                biospecimen_trial_id,
+            )
+
+            subject_value, subject_status = review_id_candidate(
+                "Subject trial ID",
+                subject_trial_id,
+                subject_exact,
+                subject_fuzzy,
+                "subject_trial_id",
+            )
+            biospecimen_value, biospecimen_status = review_id_candidate(
+                "Biospecimen trial ID",
+                biospecimen_trial_id,
+                biospecimen_exact,
+                biospecimen_fuzzy,
+                "biospecimen_trial_id",
+                prompt_when_missing=True,
+            )
+
+            fuzzy_count += int(subject_status == "fuzzy") + int(biospecimen_status == "fuzzy")
+            new_biospecimen_count += int(biospecimen_status == "new")
+            reviewed_pair = {
+                "subject_trial_id": subject_value,
+                "subject_status": subject_status,
+                "biospecimen_trial_id": biospecimen_value,
+                "biospecimen_status": biospecimen_status,
+            }
+            reviewed_pairs[pair] = reviewed_pair
+            id_map[file_path] = reviewed_pair
+
+        plan_data["biospecimenfile_id_map"] = id_map
+        print(
+            "Biospecimenfile ID review: "
+            f"{len(id_map)} file rows, {fuzzy_count} fuzzy selections, "
+            f"{new_biospecimen_count} new biospecimen IDs."
+        )
         return
 
     group_to_paths: dict[str, list[str]] = {}

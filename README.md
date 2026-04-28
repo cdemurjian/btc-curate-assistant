@@ -20,6 +20,7 @@ At a high level, it:
 - copies the latest dated manifest templates from `templates/`
 - fills the file and biospecimenfile manifests from the S3 inventory and saved plan values
 - for GBM Sharma runs, proposes subject and biospecimen IDs from `files/gbm/GBM-master-list.xlsx`
+- for White proteomics runs, derives per-file panels from the file paths and walks an interactive GBM tracker sample-selection flow
 - checks proposed subject and biospecimen IDs against Mongo reference CSVs in `files/mongo/`
 
 The generated run files live in `runs/YYMMDD_HHMMSS/`. The `runs/` and `files/` data folders are gitignored because they can contain project metadata or PHI-adjacent information.

@@ -61,4 +61,9 @@ def file_extension(file_path: str) -> str:
 
 
 def data_level_for_file(file_path: str) -> str:
-    return "1" if file_extension(file_path) in {"fastq.gz", "fq.gz"} else ""
+    extension = file_extension(file_path)
+    if extension in {"fastq.gz", "fq.gz", "raw", "mzml", "mzid", "mgf", "txt"}:
+        return "1"
+    if extension == "csv":
+        return "1" if "channelstosamples" in file_path.lower() else "3"
+    return ""
