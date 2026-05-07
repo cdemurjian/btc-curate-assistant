@@ -8,7 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from btc_manifest.config import load_dotenv
+from btc.common.config import load_dotenv
 
 
 SUBJECT_PATTERN = "subject"
@@ -25,7 +25,7 @@ def require_dependencies() -> Any:
     except ImportError as error:
         raise SystemExit(
             "Missing dependency. Run with:\n"
-            "  uv run --with pymongo pull-gbm-mongo <command>\n"
+            "  uv run --with pymongo btc curate mongo <command>\n"
         ) from error
     return MongoClient
 
@@ -121,7 +121,7 @@ def discover(args: argparse.Namespace) -> None:
 
     print("\nExport once you choose collections:")
     print(
-        "uv run --with pymongo pull-gbm-mongo export "
+        "uv run --with pymongo btc curate mongo export "
         "--subject-collection subject --biospecimen-collection biospecimen"
     )
 
@@ -204,7 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser = subparsers.add_parser("export", help="Export selected collections to CSV.")
     export_parser.add_argument("--subject-collection", default="subject")
     export_parser.add_argument("--biospecimen-collection", default="biospecimen")
-    export_parser.add_argument("--out-dir", type=Path, default=Path("files/mongo"))
+    export_parser.add_argument("--out-dir", type=Path, default=Path("data/reference/mongo"))
     export_parser.add_argument("--limit", type=int, default=None)
 
     return parser

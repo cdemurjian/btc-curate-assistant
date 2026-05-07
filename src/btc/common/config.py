@@ -44,9 +44,24 @@ class Settings:
             aws_profile=os.getenv("AWS_PROFILE"),
             aws_region=os.getenv("AWS_REGION"),
             output_dir=output_dir
-            or Path(env_value("OUTPUT_DIR", "BTC_CURATE_ASSISTANT_OUTPUT_DIR") or "runs"),
-            templates_dir=Path(
-                env_value("TEMPLATES_DIR", "BTC_CURATE_ASSISTANT_TEMPLATES_DIR") or "templates"
+            or Path(
+                env_value(
+                    "OUTPUT_DIR",
+                    "BTC_CURATE_ASSISTANT_OUTPUT_DIR",
+                    "BTC_CURATE_RUNS_DIR",
+                )
+                or "data/workspace/curate/runs"
             ),
-            files_dir=Path(env_value("FILES_DIR", "BTC_CURATE_ASSISTANT_FILES_DIR") or "files"),
+            templates_dir=Path(
+                env_value("TEMPLATES_DIR", "BTC_CURATE_ASSISTANT_TEMPLATES_DIR")
+                or "templates/manifests"
+            ),
+            files_dir=Path(
+                env_value(
+                    "FILES_DIR",
+                    "BTC_CURATE_ASSISTANT_FILES_DIR",
+                    "BTC_REFERENCE_ROOT",
+                )
+                or "data/reference"
+            ),
         )

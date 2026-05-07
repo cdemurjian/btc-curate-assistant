@@ -6,8 +6,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from btc_manifest.config import Settings
-from btc_manifest.references import latest_reference_csv
+from btc.common.config import Settings
+from btc.curate.references import latest_reference_csv
 
 
 def on_btc_vm() -> bool:
@@ -53,7 +53,7 @@ def use_cached_mongo_exports(settings: Settings, reason: str) -> bool:
 
 def ensure_current_mongo_exports(settings: Settings) -> None:
     if not on_btc_vm():
-        print("Not on BTC VM; using existing gitignored files under files/ if present.")
+        print("Not on BTC VM; using existing gitignored reference files under data/reference/ if present.")
         return
 
     subject_path, biospecimen_path = mongo_export_paths(settings)
@@ -66,11 +66,11 @@ def ensure_current_mongo_exports(settings: Settings) -> None:
             return
         raise SystemExit(
             "Mongo is not configured in .env and no cached subject/biospecimen CSVs "
-            "were found under files/mongo/."
+            "were found under data/reference/mongo/."
         )
 
     print("On BTC VM and today's Mongo exports are missing; pulling Mongo reference files...")
-    command = ["uv", "run", "--with", "pymongo", "pull-gbm-mongo", "export"]
+    command = ["uv", "run", "--with", "pymongo", "btc", "curate", "mongo", "export"]
     result = subprocess.run(command, text=True, capture_output=True, check=False)
     if result.stdout.strip():
         print(result.stdout.strip())

@@ -6,11 +6,11 @@ from pathlib import Path
 from shlex import quote
 from typing import Any
 
-from btc_manifest.aws import check_aws_sso, parse_s3_uri, run_s3_inventory
-from btc_manifest.config import Settings
-from btc_manifest.inventory import read_inventory_rows
-from btc_manifest.manifests import ASSAY_OPTIONS, render_manifest_files
-from btc_manifest.modalities import (
+from btc.common.aws import check_aws_sso, parse_s3_uri, run_s3_inventory
+from btc.common.config import Settings
+from btc.curate.inventory import read_inventory_rows
+from btc.curate.manifests import ASSAY_OPTIONS, render_manifest_files
+from btc.curate.modalities import (
     available_modalities,
     biospecimen_candidates_for_group,
     custom_proposed_pairs,
@@ -19,16 +19,16 @@ from btc_manifest.modalities import (
     review_group_key_for_file,
     should_skip_biospecimenfile_mapping,
 )
-from btc_manifest.modalities import white_proteomics
-from btc_manifest.mongo_exports import ensure_current_mongo_exports
-from btc_manifest.plans import build_plan, load_plan, save_plan_data
-from btc_manifest.references import (
+from btc.curate.modalities import white_proteomics
+from btc.curate.mongo_exports import ensure_current_mongo_exports
+from btc.curate.plans import build_plan, load_plan, save_plan_data
+from btc.curate.references import (
     exact_reference_match,
     fuzzy_reference_matches,
     load_biospecimen_references,
     load_subject_references,
 )
-from btc_manifest.templates import copy_required_templates, strip_template_hints_from_paths
+from btc.curate.templates import copy_required_templates, strip_template_hints_from_paths
 
 
 def choose_one(
@@ -673,7 +673,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory for generated run artifacts. Defaults to OUTPUT_DIR or runs/.",
+        help="Directory for generated run artifacts. Defaults to OUTPUT_DIR or data/workspace/curate/runs/.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -688,7 +688,7 @@ def run_interactive(settings: Settings) -> None:
     aws_ok, aws_message = check_aws_sso(settings)
     if not aws_ok:
         login_hint = (
-            f"\nRun `aws sso login --profile {settings.aws_profile}` and then rerun `uv run curate`."
+            f"\nRun `aws sso login --profile {settings.aws_profile}` and then rerun `uv run btc curate`."
             if settings.aws_profile
             else ""
         )

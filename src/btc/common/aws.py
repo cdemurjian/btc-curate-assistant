@@ -8,7 +8,7 @@ from pathlib import Path
 from shlex import quote
 from urllib.parse import urlparse
 
-from btc_manifest.config import Settings
+from btc.common.config import Settings
 
 
 @dataclass(frozen=True)

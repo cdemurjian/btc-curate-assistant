@@ -22,3 +22,17 @@ dist/
 build/
 
 curated/*
+
+data/reference/**
+!data/reference/.gitkeep
+!data/reference/fetch/
+!data/reference/fetch/.gitkeep
+
+data/workspace/**
+!data/workspace/.gitkeep
+!data/workspace/curate/
+!data/workspace/curate/.gitkeep
+!data/workspace/fetch/
+!data/workspace/fetch/.gitkeep
+
+*.log

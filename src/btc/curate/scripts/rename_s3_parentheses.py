@@ -3,15 +3,15 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from btc_manifest.aws import (
+from btc.common.aws import (
     check_aws_sso,
     list_s3_keys,
     move_s3_object,
     parse_s3_uri,
     plan_s3_parenthesis_renames,
 )
-from btc_manifest.config import Settings
-from btc_manifest.templates import replace_strings_in_xlsx
+from btc.common.config import Settings
+from btc.curate.templates import replace_strings_in_xlsx
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from btc_manifest.inventory import data_level_for_file, file_extension, read_inventory_rows
-from btc_manifest.modalities import assay_for_file, panel_for_file, propose_biospecimenfile_ids_for_row
-from btc_manifest.references import reviewed_id_map
-from btc_manifest.templates import replace_xlsx_sheet_rows, strip_template_hints_from_paths
+from btc.curate.inventory import data_level_for_file, file_extension, read_inventory_rows
+from btc.curate.modalities import assay_for_file, panel_for_file, propose_biospecimenfile_ids_for_row
+from btc.curate.references import reviewed_id_map
+from btc.curate.templates import replace_xlsx_sheet_rows, strip_template_hints_from_paths
 
 
 ASSAY_OPTIONS = [

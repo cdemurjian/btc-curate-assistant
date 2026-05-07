@@ -1,0 +1,746 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  cat_gsm_fastqs.sh [check]
+
+Environment overrides:
+  AWS_PROFILE              AWS profile for aws cli commands (default: curate)
+  SOURCE_S3                Source prefix to scan for SRR fastqs
+                           (default: s3://btc-osteo/staging/PRJNA1368480)
+  DEST_S3                  Destination prefix for concatenated GSM fastqs
+                           (default: s3://btc-osteo/staging/PRJNA1368480/GSM)
+  WORK_ROOT                Local staging root (default: ./data/workspace/fetch/cat_work)
+  STATE_DIR                Directory for run state (default: $WORK_ROOT/state)
+  LOG_DIR                  Directory for run logs (default: $WORK_ROOT/logs)
+  KEEP_LOCAL=1             Keep local GSM work directories after upload
+  DRY_RUN=1                Print planned aws/cat actions without executing
+
+This script:
+  check mode:
+    Lists DEST_S3 and writes STATE_DIR/GSM.done for GSMs with both R1 and R2 uploaded
+
+  run mode:
+    1. Refreshes STATE_DIR/GSM.done from DEST_S3
+    2. Lists all objects under SOURCE_S3 with aws s3 ls --recursive
+    3. Matches SRR_*_{1,2}.fastq.gz or .fq.gz files for the mapping below
+    4. Skips GSMs already present in GSM.done
+    5. Downloads all runs for one incomplete GSM into a local staging directory
+    6. Concatenates R1 files into GSMxxxx_R1.fastq.gz and R2 files into GSMxxxx_R2.fastq.gz
+    7. Uploads both files to DEST_S3, updates GSM.done, and cleans local files after success
+EOF
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+PROJECT="PRJNA1368480"
+MODE="${1:-run}"
+AWS_PROFILE="${AWS_PROFILE:-curate}"
+SOURCE_S3="${SOURCE_S3:-s3://btc-osteo/staging/${PROJECT}}"
+DEST_S3="${DEST_S3:-s3://btc-osteo/staging/${PROJECT}/GSM}"
+WORK_ROOT="${WORK_ROOT:-$PWD/data/workspace/fetch/cat_work}"
+STATE_DIR="${STATE_DIR:-$WORK_ROOT/state}"
+DONE_FILE="$STATE_DIR/GSM.done"
+LOG_DIR="${LOG_DIR:-$WORK_ROOT/logs}"
+KEEP_LOCAL="${KEEP_LOCAL:-0}"
+DRY_RUN="${DRY_RUN:-0}"
+AWS_ARGS=(--profile "$AWS_PROFILE")
+
+declare -A SRR_TO_GSM=()
+declare -A GSM_RUNS=()
+declare -A SEEN_GSM=()
+declare -A SRR_R1_URI=()
+declare -A SRR_R2_URI=()
+declare -A DONE_GSMS=()
+declare -a GSM_ORDER=()
+
+log() {
+  printf '[%s] %s\n' "$(date '+%F %T')" "$*" >&2
+}
+
+die() {
+  log "ERROR: $*"
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+run_cmd() {
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf 'DRY_RUN:'
+    printf ' %q' "$@"
+    printf '\n'
+    return 0
+  fi
+  "$@"
+}
+
+parse_s3_uri() {
+  local uri="$1"
+  local no_scheme bucket prefix
+
+  [[ "$uri" == s3://* ]] || die "Invalid S3 URI: $uri"
+  no_scheme="${uri#s3://}"
+  bucket="${no_scheme%%/*}"
+  if [[ "$bucket" == "$no_scheme" ]]; then
+    prefix=""
+  else
+    prefix="${no_scheme#*/}"
+  fi
+
+  printf '%s\t%s\n' "$bucket" "$prefix"
+}
+
+ensure_aws_auth() {
+  if ! aws "${AWS_ARGS[@]}" sts get-caller-identity >/dev/null 2>&1; then
+    die "AWS credentials are not active for profile '$AWS_PROFILE'. Run 'aws sso login --profile $AWS_PROFILE' and retry."
+  fi
+}
+
+enable_logging() {
+  local run_stamp run_log latest_log
+
+  if [[ -n "${CAT_SH_LOGGING_ACTIVE:-}" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$LOG_DIR"
+  run_stamp="$(date '+%Y%m%d_%H%M%S')"
+  run_log="$LOG_DIR/cat_${MODE}_${run_stamp}.log"
+  latest_log="$LOG_DIR/latest_${MODE}.log"
+
+  export CAT_SH_LOGGING_ACTIVE=1
+  export CAT_SH_RUN_LOG="$run_log"
+
+  exec > >(tee -a "$run_log") 2>&1
+
+  ln -sfn "$(basename "$run_log")" "$latest_log"
+  log "Logging to $run_log"
+}
+
+mark_done() {
+  local gsm="$1"
+  DONE_GSMS["$gsm"]=1
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf 'DRY_RUN: append %q to %q\n' "$gsm" "$DONE_FILE"
+    return 0
+  fi
+  grep -Fxq "$gsm" "$DONE_FILE" 2>/dev/null || printf '%s\n' "$gsm" >>"$DONE_FILE"
+}
+
+gsm_is_done() {
+  local gsm="$1"
+  [[ -n "${DONE_GSMS[$gsm]:-}" ]]
+}
+
+read_mapping() {
+  cat <<'EOF'
+SRR_id	GSM_id
+SRR36152250	GSM9315044
+SRR36152470	GSM9315043
+SRR36152396	GSM9315045
+SRR36152458	GSM9315046
+SRR36152247	GSM9315042
+SRR36152248	GSM9315042
+SRR36152249	GSM9315042
+SRR36152266	GSM9315042
+SRR36152267	GSM9315042
+SRR36152268	GSM9315042
+SRR36152459	GSM9315042
+SRR36152460	GSM9315042
+SRR36152251	GSM9315014
+SRR36152252	GSM9315014
+SRR36152253	GSM9315014
+SRR36152254	GSM9315014
+SRR36152255	GSM9315014
+SRR36152337	GSM9315014
+SRR36152338	GSM9315014
+SRR36152339	GSM9315014
+SRR36152256	GSM9315041
+SRR36152257	GSM9315041
+SRR36152258	GSM9315041
+SRR36152259	GSM9315041
+SRR36152262	GSM9315041
+SRR36152263	GSM9315041
+SRR36152264	GSM9315041
+SRR36152287	GSM9315041
+SRR36152265	GSM9315038
+SRR36152269	GSM9315038
+SRR36152294	GSM9315038
+SRR36152295	GSM9315038
+SRR36152296	GSM9315038
+SRR36152297	GSM9315038
+SRR36152298	GSM9315038
+SRR36152317	GSM9315038
+SRR36152260	GSM9315039
+SRR36152261	GSM9315039
+SRR36152277	GSM9315039
+SRR36152278	GSM9315039
+SRR36152279	GSM9315039
+SRR36152280	GSM9315039
+SRR36152281	GSM9315039
+SRR36152282	GSM9315039
+SRR36152283	GSM9315037
+SRR36152284	GSM9315037
+SRR36152285	GSM9315037
+SRR36152286	GSM9315037
+SRR36152288	GSM9315037
+SRR36152289	GSM9315037
+SRR36152290	GSM9315037
+SRR36152291	GSM9315037
+SRR36152299	GSM9315036
+SRR36152300	GSM9315036
+SRR36152301	GSM9315036
+SRR36152302	GSM9315036
+SRR36152303	GSM9315036
+SRR36152304	GSM9315036
+SRR36152305	GSM9315036
+SRR36152306	GSM9315036
+SRR36152307	GSM9315017
+SRR36152308	GSM9315017
+SRR36152309	GSM9315017
+SRR36152310	GSM9315017
+SRR36152311	GSM9315017
+SRR36152312	GSM9315017
+SRR36152313	GSM9315017
+SRR36152523	GSM9315017
+SRR36152318	GSM9315016
+SRR36152319	GSM9315016
+SRR36152320	GSM9315016
+SRR36152321	GSM9315016
+SRR36152322	GSM9315016
+SRR36152334	GSM9315016
+SRR36152516	GSM9315016
+SRR36152517	GSM9315016
+SRR36152292	GSM9315035
+SRR36152293	GSM9315035
+SRR36152315	GSM9315035
+SRR36152316	GSM9315035
+SRR36152323	GSM9315035
+SRR36152324	GSM9315035
+SRR36152370	GSM9315035
+SRR36152371	GSM9315035
+SRR36152325	GSM9315030
+SRR36152326	GSM9315015
+SRR36152327	GSM9315015
+SRR36152328	GSM9315015
+SRR36152329	GSM9315015
+SRR36152330	GSM9315015
+SRR36152331	GSM9315015
+SRR36152332	GSM9315015
+SRR36152346	GSM9315015
+SRR36152333	GSM9315012
+SRR36152335	GSM9315012
+SRR36152336	GSM9315012
+SRR36152352	GSM9315012
+SRR36152353	GSM9315012
+SRR36152354	GSM9315012
+SRR36152355	GSM9315012
+SRR36152356	GSM9315012
+SRR36152340	GSM9315013
+SRR36152341	GSM9315013
+SRR36152342	GSM9315013
+SRR36152343	GSM9315013
+SRR36152344	GSM9315013
+SRR36152345	GSM9315013
+SRR36152347	GSM9315013
+SRR36152348	GSM9315013
+SRR36152350	GSM9315009
+SRR36152351	GSM9315009
+SRR36152425	GSM9315009
+SRR36152426	GSM9315009
+SRR36152427	GSM9315009
+SRR36152428	GSM9315009
+SRR36152429	GSM9315009
+SRR36152430	GSM9315009
+SRR36152349	GSM9315011
+SRR36152357	GSM9315011
+SRR36152358	GSM9315011
+SRR36152359	GSM9315011
+SRR36152360	GSM9315011
+SRR36152361	GSM9315011
+SRR36152362	GSM9315011
+SRR36152420	GSM9315011
+SRR36152314	GSM9315033
+SRR36152365	GSM9315033
+SRR36152366	GSM9315033
+SRR36152367	GSM9315033
+SRR36152368	GSM9315033
+SRR36152369	GSM9315033
+SRR36152381	GSM9315033
+SRR36152382	GSM9315033
+SRR36152372	GSM9315034
+SRR36152373	GSM9315034
+SRR36152374	GSM9315034
+SRR36152375	GSM9315034
+SRR36152376	GSM9315034
+SRR36152377	GSM9315034
+SRR36152378	GSM9315034
+SRR36152379	GSM9315034
+SRR36152380	GSM9315032
+SRR36152387	GSM9315032
+SRR36152388	GSM9315032
+SRR36152390	GSM9315032
+SRR36152391	GSM9315032
+SRR36152392	GSM9315032
+SRR36152412	GSM9315032
+SRR36152416	GSM9315032
+SRR36152383	GSM9315027
+SRR36152384	GSM9315027
+SRR36152413	GSM9315027
+SRR36152414	GSM9315027
+SRR36152415	GSM9315027
+SRR36152479	GSM9315027
+SRR36152480	GSM9315027
+SRR36152508	GSM9315027
+SRR36152385	GSM9315026
+SRR36152386	GSM9315031
+SRR36152389	GSM9315031
+SRR36152393	GSM9315031
+SRR36152403	GSM9315031
+SRR36152408	GSM9315031
+SRR36152409	GSM9315031
+SRR36152410	GSM9315031
+SRR36152411	GSM9315031
+SRR36152395	GSM9315010
+SRR36152397	GSM9315006
+SRR36152398	GSM9315006
+SRR36152399	GSM9315006
+SRR36152400	GSM9315006
+SRR36152424	GSM9315006
+SRR36152442	GSM9315006
+SRR36152443	GSM9315006
+SRR36152444	GSM9315006
+SRR36152394	GSM9315029
+SRR36152401	GSM9315029
+SRR36152402	GSM9315029
+SRR36152473	GSM9315029
+SRR36152474	GSM9315029
+SRR36152475	GSM9315029
+SRR36152476	GSM9315029
+SRR36152477	GSM9315029
+SRR36152363	GSM9315008
+SRR36152364	GSM9315008
+SRR36152417	GSM9315008
+SRR36152418	GSM9315008
+SRR36152419	GSM9315008
+SRR36152421	GSM9315008
+SRR36152422	GSM9315008
+SRR36152423	GSM9315008
+SRR36152431	GSM9315007
+SRR36152432	GSM9315007
+SRR36152433	GSM9315007
+SRR36152434	GSM9315007
+SRR36152435	GSM9315007
+SRR36152436	GSM9315007
+SRR36152437	GSM9315007
+SRR36152438	GSM9315007
+SRR36152441	GSM9315004
+SRR36152445	GSM9315004
+SRR36152446	GSM9315004
+SRR36152447	GSM9315004
+SRR36152455	GSM9315004
+SRR36152456	GSM9315004
+SRR36152457	GSM9315004
+SRR36152530	GSM9315004
+SRR36152439	GSM9315005
+SRR36152440	GSM9315005
+SRR36152448	GSM9315005
+SRR36152449	GSM9315005
+SRR36152450	GSM9315005
+SRR36152451	GSM9315005
+SRR36152452	GSM9315005
+SRR36152453	GSM9315005
+SRR36152454	GSM9315001
+SRR36152270	GSM9315040
+SRR36152271	GSM9315040
+SRR36152272	GSM9315040
+SRR36152273	GSM9315040
+SRR36152274	GSM9315040
+SRR36152275	GSM9315040
+SRR36152276	GSM9315040
+SRR36152471	GSM9315040
+SRR36152472	GSM9315028
+SRR36152478	GSM9315024
+SRR36152505	GSM9315024
+SRR36152506	GSM9315024
+SRR36152507	GSM9315024
+SRR36152509	GSM9315024
+SRR36152510	GSM9315024
+SRR36152511	GSM9315024
+SRR36152512	GSM9315024
+SRR36152404	GSM9315025
+SRR36152405	GSM9315025
+SRR36152406	GSM9315025
+SRR36152407	GSM9315025
+SRR36152481	GSM9315025
+SRR36152482	GSM9315025
+SRR36152483	GSM9315025
+SRR36152484	GSM9315025
+SRR36152487	GSM9315022
+SRR36152488	GSM9315022
+SRR36152489	GSM9315022
+SRR36152490	GSM9315022
+SRR36152491	GSM9315022
+SRR36152492	GSM9315022
+SRR36152493	GSM9315022
+SRR36152494	GSM9315022
+SRR36152485	GSM9315023
+SRR36152486	GSM9315023
+SRR36152495	GSM9315023
+SRR36152496	GSM9315023
+SRR36152497	GSM9315023
+SRR36152498	GSM9315023
+SRR36152499	GSM9315023
+SRR36152515	GSM9315023
+SRR36152500	GSM9315021
+SRR36152501	GSM9315021
+SRR36152502	GSM9315021
+SRR36152503	GSM9315021
+SRR36152504	GSM9315021
+SRR36152513	GSM9315021
+SRR36152514	GSM9315021
+SRR36152518	GSM9315021
+SRR36152519	GSM9315020
+SRR36152520	GSM9315019
+SRR36152521	GSM9315018
+SRR36152461	GSM9315003
+SRR36152462	GSM9315003
+SRR36152463	GSM9315003
+SRR36152464	GSM9315003
+SRR36152465	GSM9315003
+SRR36152466	GSM9315003
+SRR36152467	GSM9315003
+SRR36152522	GSM9315003
+SRR36152524	GSM9314998
+SRR36152525	GSM9314998
+SRR36152526	GSM9314998
+SRR36152554	GSM9314998
+SRR36152555	GSM9314998
+SRR36152556	GSM9314998
+SRR36152557	GSM9314998
+SRR36152558	GSM9314998
+SRR36152527	GSM9315002
+SRR36152528	GSM9315002
+SRR36152529	GSM9315002
+SRR36152531	GSM9315002
+SRR36152532	GSM9315002
+SRR36152533	GSM9315002
+SRR36152542	GSM9315002
+SRR36152543	GSM9315002
+SRR36152468	GSM9315000
+SRR36152469	GSM9315000
+SRR36152534	GSM9315000
+SRR36152535	GSM9315000
+SRR36152536	GSM9315000
+SRR36152538	GSM9315000
+SRR36152539	GSM9315000
+SRR36152540	GSM9315000
+SRR36152537	GSM9314994
+SRR36152541	GSM9314999
+SRR36152544	GSM9314999
+SRR36152545	GSM9314999
+SRR36152546	GSM9314999
+SRR36152547	GSM9314999
+SRR36152548	GSM9314999
+SRR36152549	GSM9314999
+SRR36152550	GSM9314999
+SRR36152551	GSM9314995
+SRR36152552	GSM9314995
+SRR36152553	GSM9314995
+SRR36152569	GSM9314995
+SRR36152570	GSM9314995
+SRR36152571	GSM9314995
+SRR36152572	GSM9314995
+SRR36152573	GSM9314995
+SRR36152559	GSM9314997
+SRR36152560	GSM9314997
+SRR36152561	GSM9314997
+SRR36152562	GSM9314997
+SRR36152563	GSM9314997
+SRR36152564	GSM9314997
+SRR36152582	GSM9314997
+SRR36152583	GSM9314997
+SRR36152565	GSM9314996
+SRR36152566	GSM9314990
+SRR36152591	GSM9314990
+SRR36152592	GSM9314990
+SRR36152593	GSM9314990
+SRR36152594	GSM9314990
+SRR36152595	GSM9314990
+SRR36152596	GSM9314990
+SRR36152597	GSM9314990
+SRR36152567	GSM9314991
+SRR36152568	GSM9314991
+SRR36152598	GSM9314991
+SRR36152599	GSM9314991
+SRR36152600	GSM9314991
+SRR36152601	GSM9314991
+SRR36152602	GSM9314991
+SRR36152603	GSM9314991
+SRR36152574	GSM9314993
+SRR36152575	GSM9314993
+SRR36152576	GSM9314993
+SRR36152577	GSM9314993
+SRR36152578	GSM9314993
+SRR36152579	GSM9314993
+SRR36152580	GSM9314993
+SRR36152610	GSM9314993
+SRR36152581	GSM9314992
+SRR36152584	GSM9314987
+SRR36152623	GSM9314987
+SRR36152624	GSM9314987
+SRR36152625	GSM9314987
+SRR36152626	GSM9314987
+SRR36152627	GSM9314987
+SRR36152628	GSM9314987
+SRR36152629	GSM9314987
+SRR36152590	GSM9314988
+SRR36152605	GSM9314988
+SRR36152606	GSM9314988
+SRR36152618	GSM9314988
+SRR36152619	GSM9314988
+SRR36152620	GSM9314988
+SRR36152621	GSM9314988
+SRR36152622	GSM9314988
+SRR36152586	GSM9314989
+SRR36152587	GSM9314989
+SRR36152588	GSM9314989
+SRR36152589	GSM9314989
+SRR36152604	GSM9314989
+SRR36152607	GSM9314989
+SRR36152608	GSM9314989
+SRR36152609	GSM9314989
+SRR36152585	GSM9314986
+SRR36152611	GSM9314986
+SRR36152612	GSM9314986
+SRR36152613	GSM9314986
+SRR36152614	GSM9314986
+SRR36152615	GSM9314986
+SRR36152616	GSM9314986
+SRR36152617	GSM9314986
+EOF
+}
+
+load_mapping() {
+  local srr gsm
+
+  while IFS=$'\t' read -r srr gsm; do
+    [[ "$srr" == "SRR_id" ]] && continue
+    [[ -n "$srr" && -n "$gsm" ]] || continue
+
+    SRR_TO_GSM["$srr"]="$gsm"
+    GSM_RUNS["$gsm"]+="${srr}"$'\n'
+
+    if [[ -z "${SEEN_GSM[$gsm]:-}" ]]; then
+      SEEN_GSM["$gsm"]=1
+      GSM_ORDER+=("$gsm")
+    fi
+  done < <(read_mapping)
+}
+
+refresh_done_state() {
+  local base gsm suffix
+  declare -A has_r1=()
+  declare -A has_r2=()
+
+  DONE_GSMS=()
+  run_cmd mkdir -p "$STATE_DIR"
+
+  log "Checking completed GSM outputs under ${DEST_S3%/}/"
+  while read -r base; do
+    [[ -n "$base" ]] || continue
+
+    if [[ "$base" =~ ^(GSM[0-9]+)_R1\.fastq\.gz$ ]]; then
+      gsm="${BASH_REMATCH[1]}"
+      has_r1["$gsm"]=1
+    elif [[ "$base" =~ ^(GSM[0-9]+)_R2\.fastq\.gz$ ]]; then
+      gsm="${BASH_REMATCH[1]}"
+      has_r2["$gsm"]=1
+    fi
+  done < <(
+    aws "${AWS_ARGS[@]}" s3 ls "${DEST_S3%/}/" \
+      | awk '{print $4}'
+  )
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf 'DRY_RUN: recreate %q from destination bucket state\n' "$DONE_FILE"
+  else
+    : >"$DONE_FILE"
+  fi
+
+  for gsm in "${GSM_ORDER[@]}"; do
+    if [[ -n "${has_r1[$gsm]:-}" && -n "${has_r2[$gsm]:-}" ]]; then
+      mark_done "$gsm"
+    elif [[ -n "${has_r1[$gsm]:-}" || -n "${has_r2[$gsm]:-}" ]]; then
+      suffix=""
+      [[ -n "${has_r1[$gsm]:-}" ]] && suffix+=" R1"
+      [[ -n "${has_r2[$gsm]:-}" ]] && suffix+=" R2"
+      log "Partial destination state for $gsm:$suffix"
+    fi
+  done
+
+  log "Wrote $(wc -l <"$DONE_FILE" 2>/dev/null || printf '0') completed GSMs to $DONE_FILE"
+}
+
+load_source_listing() {
+  local source_bucket source_prefix key s3_uri base srr
+  IFS=$'\t' read -r source_bucket source_prefix < <(parse_s3_uri "$SOURCE_S3")
+
+  log "Listing source objects under ${SOURCE_S3%/}/"
+  while read -r key; do
+    [[ -n "$key" ]] || continue
+    base="${key##*/}"
+    s3_uri="s3://${source_bucket}/${key}"
+
+    if [[ "$base" =~ ^(SRR[0-9]+)_1\.(fastq|fq)\.gz$ ]]; then
+      srr="${BASH_REMATCH[1]}"
+      [[ -z "${SRR_R1_URI[$srr]:-}" ]] || die "Duplicate R1 match for $srr: ${SRR_R1_URI[$srr]} and $s3_uri"
+      SRR_R1_URI["$srr"]="$s3_uri"
+    elif [[ "$base" =~ ^(SRR[0-9]+)_2\.(fastq|fq)\.gz$ ]]; then
+      srr="${BASH_REMATCH[1]}"
+      [[ -z "${SRR_R2_URI[$srr]:-}" ]] || die "Duplicate R2 match for $srr: ${SRR_R2_URI[$srr]} and $s3_uri"
+      SRR_R2_URI["$srr"]="$s3_uri"
+    fi
+  done < <(
+    aws "${AWS_ARGS[@]}" s3 ls "${SOURCE_S3%/}/" --recursive \
+      | awk '{print $4}'
+  )
+}
+
+validate_mapping_against_listing() {
+  local srr missing=0
+
+  for srr in "${!SRR_TO_GSM[@]}"; do
+    if [[ -z "${SRR_R1_URI[$srr]:-}" ]]; then
+      log "Missing R1 in source listing for $srr"
+      missing=1
+    fi
+    if [[ -z "${SRR_R2_URI[$srr]:-}" ]]; then
+      log "Missing R2 in source listing for $srr"
+      missing=1
+    fi
+  done
+
+  [[ "$missing" == "0" ]] || die "Source listing is incomplete for one or more mapped SRRs."
+}
+
+cleanup_stale_gsm() {
+  local gsm="$1"
+  local gsm_dir="$WORK_ROOT/$gsm"
+
+  if [[ -d "$gsm_dir" ]]; then
+    log "Removing stale local work for $gsm"
+    run_cmd rm -rf "$gsm_dir"
+  fi
+}
+
+process_gsm() {
+  local gsm="$1"
+  local gsm_dir download_dir output_dir r1_out r2_out
+  local -a runs=()
+  local -a r1_parts=()
+  local -a r2_parts=()
+  local run r1_uri r2_uri r1_local r2_local
+
+  mapfile -t runs < <(printf '%s' "${GSM_RUNS[$gsm]}" | sed '/^$/d')
+  [[ "${#runs[@]}" -gt 0 ]] || die "No SRRs found for $gsm"
+
+  gsm_dir="$WORK_ROOT/$gsm"
+  download_dir="$gsm_dir/downloads"
+  output_dir="$gsm_dir/output"
+  r1_out="$output_dir/${gsm}_R1.fastq.gz"
+  r2_out="$output_dir/${gsm}_R2.fastq.gz"
+
+  cleanup_stale_gsm "$gsm"
+  run_cmd mkdir -p "$download_dir" "$output_dir"
+  log "Processing $gsm with ${#runs[@]} runs"
+
+  for run in "${runs[@]}"; do
+    r1_uri="${SRR_R1_URI[$run]}"
+    r2_uri="${SRR_R2_URI[$run]}"
+    r1_local="$download_dir/${run}_1.fastq.gz"
+    r2_local="$download_dir/${run}_2.fastq.gz"
+
+    log "Downloading $run for $gsm"
+    run_cmd aws "${AWS_ARGS[@]}" s3 cp "$r1_uri" "$r1_local" --only-show-errors
+    run_cmd aws "${AWS_ARGS[@]}" s3 cp "$r2_uri" "$r2_local" --only-show-errors
+
+    r1_parts+=("$r1_local")
+    r2_parts+=("$r2_local")
+  done
+
+  log "Concatenating ${gsm}_R1.fastq.gz"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf 'DRY_RUN: cat'
+    printf ' %q' "${r1_parts[@]}"
+    printf ' > %q\n' "$r1_out"
+  else
+    cat "${r1_parts[@]}" >"$r1_out"
+  fi
+
+  log "Concatenating ${gsm}_R2.fastq.gz"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf 'DRY_RUN: cat'
+    printf ' %q' "${r2_parts[@]}"
+    printf ' > %q\n' "$r2_out"
+  else
+    cat "${r2_parts[@]}" >"$r2_out"
+  fi
+
+  log "Uploading $gsm outputs to ${DEST_S3%/}/"
+  run_cmd aws "${AWS_ARGS[@]}" s3 cp "$r1_out" "${DEST_S3%/}/$(basename "$r1_out")" --only-show-errors
+  run_cmd aws "${AWS_ARGS[@]}" s3 cp "$r2_out" "${DEST_S3%/}/$(basename "$r2_out")" --only-show-errors
+  mark_done "$gsm"
+
+  if [[ "$KEEP_LOCAL" != "1" ]]; then
+    log "Cleaning local files for $gsm"
+    run_cmd rm -rf "$gsm_dir"
+  fi
+}
+
+main() {
+  local gsm
+
+  enable_logging
+
+  need_cmd aws
+  need_cmd awk
+  need_cmd grep
+  need_cmd tee
+  need_cmd sed
+  need_cmd cat
+  run_cmd mkdir -p "$WORK_ROOT" "$STATE_DIR" "$LOG_DIR"
+  [[ "$MODE" == "run" || "$MODE" == "check" ]] || die "Unsupported mode: $MODE"
+
+  ensure_aws_auth
+  load_mapping
+  refresh_done_state
+
+  if [[ "$MODE" == "check" ]]; then
+    return 0
+  fi
+
+  load_source_listing
+  validate_mapping_against_listing
+
+  for gsm in "${GSM_ORDER[@]}"; do
+    if gsm_is_done "$gsm"; then
+      log "Skipping completed $gsm"
+      cleanup_stale_gsm "$gsm"
+      continue
+    fi
+    process_gsm "$gsm"
+  done
+
+  log "Completed concatenation and upload for ${#GSM_ORDER[@]} GSMs"
+}
+
+main "$@"

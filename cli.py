@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from btc_manifest.cli import main
+from btc.cli import main
 
 
 if __name__ == "__main__":

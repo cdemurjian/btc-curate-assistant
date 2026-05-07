@@ -6,8 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from btc_manifest.aws import S3Location, build_aws_s3_inventory_command, normalize_s3_uri, parse_s3_uri
-from btc_manifest.config import Settings
+from btc.common.aws import S3Location, build_aws_s3_inventory_command, normalize_s3_uri, parse_s3_uri
+from btc.common.config import Settings
 
 
 @dataclass(frozen=True)
