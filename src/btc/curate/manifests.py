@@ -4,7 +4,14 @@ from pathlib import Path
 from typing import Any
 
 from btc.curate.inventory import data_level_for_file, file_extension, read_inventory_rows
-from btc.curate.modalities import assay_for_file, panel_for_file, propose_biospecimenfile_ids_for_row
+from btc.curate.modalities import (
+    assay_for_file,
+    biospecimen_row_extras,
+    panel_for_file,
+    platform_for_file,
+    propose_biospecimenfile_ids_for_row,
+    vendor_for_file,
+)
 from btc.curate.references import reviewed_id_map
 from btc.curate.templates import replace_xlsx_sheet_rows, strip_template_hints_from_paths
 
@@ -73,6 +80,8 @@ def render_file_manifest(plan_data: dict[str, Any]) -> str:
         file_path = row["file_path"]
         assay_value = assay_for_file(file_path, plan_data) or manifest_assay_value(manifest_values)
         panel_value = panel_for_file(file_path, plan_data) or manifest_values["panel"]
+        platform_value = platform_for_file(file_path, plan_data) or manifest_values["platform"]
+        vendor_value = vendor_for_file(file_path, plan_data) or manifest_values["vendor"]
         file_rows.append(
             [
                 "file",
@@ -88,8 +97,8 @@ def render_file_manifest(plan_data: dict[str, Any]) -> str:
                 int(row["size"]) if row["size"].isdigit() else row["size"],
                 "",
                 panel_value,
-                manifest_values["platform"],
-                manifest_values["vendor"],
+                platform_value,
+                vendor_value,
             ]
         )
 
@@ -158,6 +167,29 @@ def render_biospecimenfile_manifest(plan_data: dict[str, Any]) -> str:
     return str(biospecimenfile_template)
 
 
+def _biospecimen_manifest_row(
+    teamlab: str,
+    study: str,
+    subject_trial_id: str,
+    biospecimen_trial_id: str,
+    plan_data: dict[str, Any],
+) -> list[Any]:
+    extras = biospecimen_row_extras(biospecimen_trial_id, plan_data)
+    return [
+        "biospecimen",
+        teamlab,
+        study,
+        subject_trial_id,
+        biospecimen_trial_id,
+        extras.get("sample_type", ""),
+        extras.get("timepoint", ""),
+        extras.get("additional_data", ""),
+        extras.get("nominal_timepoint", ""),
+        extras.get("parent_biospecimen", ""),
+        extras.get("parent_biospecimen_raw", ""),
+    ]
+
+
 def render_biospecimen_manifest(plan_data: dict[str, Any]) -> str | None:
     copied_templates = plan_data.get("copied_templates", {})
     if "biospecimen" not in copied_templates:
@@ -195,19 +227,13 @@ def render_biospecimen_manifest(plan_data: dict[str, Any]) -> str | None:
                 continue
             seen.add(key)
             biospecimen_rows.append(
-                [
-                    "biospecimen",
+                _biospecimen_manifest_row(
                     teamlab,
                     manifest_values["study"],
                     subject_trial_id,
                     biospecimen_trial_id,
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                ]
+                    plan_data,
+                )
             )
         replace_xlsx_sheet_rows(biospecimen_template, "Sheet1", biospecimen_rows)
         strip_template_hints_from_paths([str(biospecimen_template)])
@@ -224,19 +250,13 @@ def render_biospecimen_manifest(plan_data: dict[str, Any]) -> str | None:
             continue
         seen.add(key)
         biospecimen_rows.append(
-            [
-                "biospecimen",
+            _biospecimen_manifest_row(
                 teamlab,
                 manifest_values["study"],
                 subject_trial_id,
                 biospecimen_trial_id,
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-            ]
+                plan_data,
+            )
         )
 
     replace_xlsx_sheet_rows(biospecimen_template, "Sheet1", biospecimen_rows)

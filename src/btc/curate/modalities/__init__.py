@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import sharma, white_proteomics
+from . import levine_lab, sharma, white_proteomics
 
 
 def _default_review_group_key(file_path: str, plan_data: dict[str, Any]) -> str:
@@ -27,6 +27,15 @@ class ModalitySpec:
     review_group_key_for_file: Callable[[str, dict[str, Any]], str] = _default_review_group_key
     assay_for_file: Callable[[str, dict[str, Any]], str | None] = lambda file_path, plan_data: None
     panel_for_file: Callable[[str, dict[str, Any]], str | None] = lambda file_path, plan_data: None
+    platform_for_file: Callable[[str, dict[str, Any]], str | None] = (
+        lambda file_path, plan_data: None
+    )
+    vendor_for_file: Callable[[str, dict[str, Any]], str | None] = (
+        lambda file_path, plan_data: None
+    )
+    biospecimen_row_extras: Callable[[str, dict[str, Any]], dict[str, str]] = (
+        lambda biospecimen_trial_id, plan_data: {}
+    )
     biospecimen_candidates_for_group: Callable[[list[str], dict[str, Any]], list[str]] = (
         lambda group_parts, plan_data: []
     )
@@ -38,6 +47,16 @@ class ModalitySpec:
 
 _MODALITIES: dict[str, ModalitySpec] = {
     "no_modality-default": ModalitySpec(name="no_modality-default"),
+    "levine_lab": ModalitySpec(
+        name="levine_lab",
+        manifest_defaults=levine_lab.MANIFEST_DEFAULTS,
+        propose_biospecimenfile_ids_for_row=levine_lab.propose_biospecimenfile_ids_for_row,
+        review_group_key_for_file=levine_lab.review_group_key_for_file,
+        assay_for_file=levine_lab.assay_for_file,
+        platform_for_file=levine_lab.platform_for_file,
+        vendor_for_file=levine_lab.vendor_for_file,
+        biospecimen_row_extras=levine_lab.biospecimen_row_extras,
+    ),
     "sharma": ModalitySpec(
         name="sharma",
         propose_biospecimenfile_ids_for_row=sharma.propose_biospecimenfile_ids_for_row,
@@ -113,6 +132,27 @@ def panel_for_file(
     plan_data: dict[str, Any],
 ) -> str | None:
     return modality_spec(plan_data).panel_for_file(file_path, plan_data)
+
+
+def platform_for_file(
+    file_path: str,
+    plan_data: dict[str, Any],
+) -> str | None:
+    return modality_spec(plan_data).platform_for_file(file_path, plan_data)
+
+
+def vendor_for_file(
+    file_path: str,
+    plan_data: dict[str, Any],
+) -> str | None:
+    return modality_spec(plan_data).vendor_for_file(file_path, plan_data)
+
+
+def biospecimen_row_extras(
+    biospecimen_trial_id: str,
+    plan_data: dict[str, Any],
+) -> dict[str, str]:
+    return modality_spec(plan_data).biospecimen_row_extras(biospecimen_trial_id, plan_data)
 
 
 def biospecimen_candidates_for_group(
