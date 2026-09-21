@@ -11,6 +11,7 @@ btc = "btc.cli:main"
 curate = "btc.curate.cli:main"
 btc-curate-assistant = "btc.curate.cli:main"
 pull-gbm-mongo = "btc.curate.scripts.pull_gbm_mongo:main"
+fastq-coverage = "btc.qc.coverage:main"
 rename = "btc.curate.scripts.rename_s3_parentheses:main"
 
 [build-system]

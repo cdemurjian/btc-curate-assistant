@@ -5,6 +5,7 @@ import argparse
 from btc.curate import cli as curate_cli
 from btc.curate.scripts import pull_gbm_mongo, rename_s3_parentheses
 from btc.fetch import cli as fetch_cli
+from btc.qc import cli as qc_cli
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -12,7 +13,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="btc",
         description="BTC curation and data operations toolkit.",
     )
-    parser.add_argument("domain", nargs="?", choices=["curate", "fetch"], help="Tool family to run.")
+    parser.add_argument("domain", nargs="?", choices=["curate", "fetch", "qc"], help="Tool family to run.")
     parser.add_argument("args", nargs=argparse.REMAINDER, help="Arguments for the selected tool family.")
     return parser
 
@@ -41,6 +42,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.domain == "fetch":
         fetch_cli.main(args.args)
+        return
+
+    if args.domain == "qc":
+        qc_cli.main(args.args)
         return
 
     parser.print_help()
